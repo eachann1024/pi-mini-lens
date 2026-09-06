@@ -13,6 +13,7 @@ export interface MiniLensSettings {
   "mini-lens-session-tokens-show": boolean;
   "mini-lens-cache-tokens-show": boolean;
   "mini-lens-cost-show": boolean;
+  "mini-lens-mcp-show": boolean;
   "mini-lens-context-show": boolean;
   "mini-lens-context-dots-show": boolean;
   "mini-lens-context-percent-show": boolean;
@@ -28,6 +29,7 @@ export const DEFAULT_SETTINGS: Readonly<MiniLensSettings> = {
   "mini-lens-session-tokens-show": true,
   "mini-lens-cache-tokens-show": true,
   "mini-lens-cost-show": true,
+  "mini-lens-mcp-show": false,
   "mini-lens-context-show": true,
   "mini-lens-context-dots-show": false,
   "mini-lens-context-percent-show": true,
@@ -64,6 +66,20 @@ export async function saveSettings(settings: MiniLensSettings, path = settingsPa
   const temporaryPath = `${path}.tmp`;
   await writeFile(temporaryPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
   await rename(temporaryPath, path);
+}
+
+function enabledMcpServerCount(value: unknown): number | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const snapshot = value as { version?: unknown; servers?: unknown };
+  if (snapshot.version !== 1 || !Array.isArray(snapshot.servers)) return undefined;
+  let count = 0;
+  for (const server of snapshot.servers) {
+    if (!server || typeof server !== "object" || Array.isArray(server)
+      || typeof server.name !== "string"
+      || (server.disabled !== undefined && typeof server.disabled !== "boolean")) return undefined;
+    if (server.disabled !== true) count++;
+  }
+  return count;
 }
 
 function formatTokens(value: number): string {
@@ -194,7 +210,7 @@ export function settingsPreviewLine(
   width = 140,
   highlighted?: keyof MiniLensSettings,
 ): string {
-  return statusLine(SETTINGS_PREVIEW_CONTEXT, theme, width, SETTINGS_PREVIEW_USAGE, settings, 120, highlighted);
+  return statusLine(SETTINGS_PREVIEW_CONTEXT, theme, width, SETTINGS_PREVIEW_USAGE, settings, 120, highlighted, 3);
 }
 
 export function statusLine(
@@ -205,6 +221,7 @@ export function statusLine(
   settings: MiniLensSettings,
   speed: number | undefined,
   highlighted?: keyof MiniLensSettings,
+  mcpCount?: number,
 ): string {
   if (highlighted === "mini-lens-context-dots-show") highlighted = "mini-lens-context-show";
   const field = (id: keyof MiniLensSettings, color: Parameters<typeof theme.fg>[0], text: string) =>
@@ -224,6 +241,7 @@ export function statusLine(
   const percentText = percent === undefined ? "" : `${Math.round(percent)}%`;
   const tokenText = tokens === undefined || contextWindow === undefined ? "" : `${formatTokens(Math.max(0, tokens))}/${formatTokens(Math.max(0, contextWindow))}`;
   const showContext = settings["mini-lens-context-show"] && Boolean(tokenText);
+  const mcpText = settings["mini-lens-mcp-show"] && mcpCount !== undefined ? `◇ MCP ${mcpCount}` : "";
 
   const right = renderRight(theme, settings, percentText, speed, highlighted);
   const rightWidth = visibleWidth(right);
@@ -241,6 +259,7 @@ export function statusLine(
     settings["mini-lens-cache-tokens-show"] && field("mini-lens-cache-tokens-show", "text", `Cached ${formatTokens(cachedTokens)}`),
     settings["mini-lens-ch-show"] && hitText && field("mini-lens-ch-show", "text", hitText),
     settings["mini-lens-cost-show"] && price && field("mini-lens-cost-show", "muted", price),
+    mcpText && field("mini-lens-mcp-show", "muted", mcpText),
   ].filter((part): part is string => Boolean(part));
   const unstyledLeft = [
     settings["mini-lens-model-show"] && model,
@@ -249,6 +268,7 @@ export function statusLine(
     settings["mini-lens-cache-tokens-show"] && `Cached ${formatTokens(cachedTokens)}`,
     settings["mini-lens-ch-show"] && hitText,
     settings["mini-lens-cost-show"] && price,
+    mcpText,
   ].filter(Boolean).join("  ");
   const leftBudget = Math.min(visibleWidth(unstyledLeft), Math.max(1, width - rightWidth - (showContext ? 20 : 1)), Math.max(0, width - rightWidth - 1));
   const left = leftParts.length > 0 ? truncateToWidth(leftParts.join("  "), leftBudget, "…") : "";
@@ -282,6 +302,7 @@ function settingsItems(settings: MiniLensSettings): SettingItem[] {
     "mini-lens-cache-tokens-show": "Show session cache tokens",
     "mini-lens-ch-show": "Show cache hit rate (CH)",
     "mini-lens-cost-show": "Show session price",
+    "mini-lens-mcp-show": "Show enabled MCP servers",
     "mini-lens-context-show": "Show context tokens and progress bar",
     "mini-lens-context-dots-show": "↳ Use dot-matrix progress bar",
     "mini-lens-context-percent-show": "Show context percentage",
@@ -319,6 +340,7 @@ function outputSpeed(output: unknown, startedAt: number, endedAt = Date.now()): 
 export default function (pi: ExtensionAPI) {
   let refreshFooter: (() => void) | undefined;
   let speed: number | undefined;
+  let mcpCount: number | undefined;
   let activeGeneration: ActiveGeneration | undefined;
   const toolStarts = new Map<string, number>();
   let speedTimer: ReturnType<typeof setInterval> | undefined;
@@ -327,6 +349,13 @@ export default function (pi: ExtensionAPI) {
   const configPath = settingsPath();
 
   const refresh = () => refreshFooter?.();
+  // All factories run before session_start; retain startup broadcasts until the footer mounts.
+  const unsubscribeMcpStatus = pi.events.on("pi-mcp-adapter/status/v1", (value: unknown) => {
+    const count = enabledMcpServerCount(value);
+    if (count === undefined) return;
+    mcpCount = count;
+    refresh();
+  });
   const stopSpeedTimer = () => {
     if (speedTimer) clearInterval(speedTimer);
     speedTimer = undefined;
@@ -415,14 +444,14 @@ export default function (pi: ExtensionAPI) {
       return {
         invalidate() {},
         render(width: number): string[] {
-          return [statusLine(ctx, theme, width, sessionUsage(ctx), settings, speed)];
+          return [statusLine(ctx, theme, width, sessionUsage(ctx), settings, speed, undefined, mcpCount)];
         },
       };
     });
     refresh();
     if (!loaded.exists && ctx.mode === "tui" && ctx.hasUI) {
       const choice = await ctx.ui.select(
-        "Mini Lens preview\n\n  deepseek-v4-flash  high  Total 45K  Cached 25K  CH 40.0%  $0.012  500/1.0M  █░░░░░░░░░  1%  120 tok/s\n\nAll fields are enabled by default.",
+        "Mini Lens preview\n\n  deepseek-v4-flash  high  Total 45K  Cached 25K  CH 40.0%  $0.012  500/1.0M  █░░░░░░░░░  1%  120 tok/s\n\nMCP count and dot-matrix style are off by default; other fields are on.",
         ["Keep defaults", "Configure now"],
       );
       settings = { ...settings, onboardingCompleted: true };
@@ -479,6 +508,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_start", refresh);
   pi.on("agent_end", refresh);
   pi.on("session_shutdown", () => {
+    unsubscribeMcpStatus();
     refreshFooter = undefined;
     activeGeneration = undefined;
     toolStarts.clear();

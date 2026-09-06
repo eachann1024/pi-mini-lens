@@ -146,9 +146,15 @@ npm run check
 npm test
 ```
 
-After source changes, run `/reload` in an already-open Pi session. `npm run check` runs TypeScript checking and `npm test` runs the footer self-check.
+After source changes, run `/reload` in an already-open Pi session. `npm run check` runs TypeScript checking and `npm test` runs the footer, settings, and publishing self-checks.
 
 </details>
+
+## Publishing
+
+Pushes to `main` automatically publish to npm after `npm ci`, `npm run check`, and `npm test`; the workflow also supports manual dispatch on `main`. Each release uses the higher of the local version baseline and npm's latest stable version plus one patch. Versions change only in the runner, with no version commits or tags; raise the baseline in `package.json` and the lockfile for a major/minor release. Already-published commits are skipped. Actions concurrency can replace pending pushes, so not every push (or every commit within a push) is guaranteed a separate package release.
+
+One-time setup: publish the initial `1.3.1` package using an authenticated maintainer account, then configure its npm **Trusted Publisher** for GitHub owner `eachann1024`, repository `pi-mini-lens`, workflow `publish.yml` (no environment), allowing direct `npm publish`. Subsequent releases use OIDC and provenance, without an npm token.
 
 ---
 

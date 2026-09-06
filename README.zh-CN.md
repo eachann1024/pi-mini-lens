@@ -146,9 +146,15 @@ npm run check
 npm test
 ```
 
-修改源码后，在已打开的 Pi 会话中执行 `/reload`。`npm run check` 做 TypeScript 检查，`npm test` 运行底栏自检。
+修改源码后，在已打开的 Pi 会话中执行 `/reload`。`npm run check` 做 TypeScript 检查，`npm test` 运行底栏、设置交互和发布自检。
 
 </details>
+
+## 发布
+
+每次推送到 `main`，通过 `npm ci`、`npm run check` 和 `npm test` 后自动发布 npm；也可在 `main` 手动触发工作流。发布版本取本地版本基线与 npm 最新稳定版本 patch 加一的较大值。版本仅在 runner 工作副本中修改，不回写版本提交、不创建 tag；发布 major/minor 时，提高 `package.json` 和 lockfile 中的本地基线即可。已发布的 commit 会跳过。Actions 并发机制可能合并待运行的 push，不保证每次 push（或一次 push 中每个 commit）都单独发包。
+
+一次性配置：先由已登录的维护者账号首次发布 `1.3.1`，再在 npm 包设置中绑定 **Trusted Publisher**：GitHub owner `eachann1024`、repo `pi-mini-lens`、workflow `publish.yml`（不填 environment），并允许直接 `npm publish`。后续通过 OIDC 发布并附带 provenance，无需 npm token。
 
 ---
 

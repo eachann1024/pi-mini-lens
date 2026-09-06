@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { register } from "node:module";
+import { setTimeout } from "node:timers/promises";
 
 // Keep real TUI components, but avoid loading the unrelated Pi server runtime.
 const piStub = `data:text/javascript,${encodeURIComponent(`
@@ -13,12 +14,12 @@ export const getSettingsListTheme = () => ({
 });
 `)}`;
 register(`data:text/javascript,${encodeURIComponent(`export async function resolve(s,c,n){if(s==='@earendil-works/pi-coding-agent')return {shortCircuit:true,url:${JSON.stringify(piStub)}};return n(s,c)}`)}`, import.meta.url);
-const { default: extension } = await import("../extensions/footer-status.ts");
+const { default: extension, loadSettings, settingsPath, settingsPreviewLine, DEFAULT_SETTINGS } = await import("../extensions/footer-status.ts");
 
 const dir = await mkdtemp(join(tmpdir(), "mini-lens-pointer-"));
 process.env.MINI_LENS_AGENT_DIR = dir;
 const commands = new Map();
-extension({ on() {}, registerCommand(name, command) { commands.set(name, command); } });
+extension({ events: { on() { return () => {}; } }, on() {}, registerCommand(name, command) { commands.set(name, command); } });
 let panel;
 const theme = {
   bg(color, text) { assert.equal(color, "selectedBg"); return `\x1b[47m${text}\x1b[49m`; },
@@ -52,6 +53,25 @@ for (const width of [140, 80, 40]) {
   if (width >= 140) assert.match(lines.slice(0, row - 2).join("\n"), /\x1b\[32m\x1b\[1mTotal/, "keyboard updates preview highlight");
   assert.ok(lines.every((line) => visibleWidth(line) <= width), "panel stays within terminal width");
 }
+panel.handleInput("mcp");
+let lines = panel.render(140);
+assert.ok(lines.some((line) => /Show enabled MCP servers.*off/.test(plain(line))), "search finds MCP toggle defaulting to off");
+panel.handleInput("\r");
+lines = panel.render(140);
+assert.ok(lines.some((line) => /Show enabled MCP servers.*on/.test(plain(line))), "Enter enables MCP count");
+assert.match(lines.join("\n"), /\x1b\[47m\x1b\[32m\x1b\[1m◇ MCP 3/, "selected MCP toggle highlights its example field");
+for (const width of [140, 80, 40, 20]) {
+  assert.ok(panel.render(width).every((line) => visibleWidth(line) <= width), `MCP settings stay within ${width} columns`);
+}
+for (let width = 0; width <= 140; width++) {
+  const preview = settingsPreviewLine(theme, { ...DEFAULT_SETTINGS, "mini-lens-mcp-show": true }, width, "mini-lens-mcp-show");
+  assert.ok(visibleWidth(preview) <= width, `ANSI-styled MCP preview respects ${width} columns`);
+}
+for (let attempt = 0; attempt < 100; attempt++) {
+  if ((await loadSettings(settingsPath(dir))).settings["mini-lens-mcp-show"]) break;
+  await setTimeout(10);
+}
+assert.equal((await loadSettings(settingsPath(dir))).settings["mini-lens-mcp-show"], true, "real keyboard toggle persists");
 await rm(dir, { recursive: true, force: true });
 delete process.env.MINI_LENS_AGENT_DIR;
 console.log("settings interaction check ok (real SettingsList / Container)");

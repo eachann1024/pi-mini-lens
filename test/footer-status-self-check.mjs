@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { setTimeout } from "node:timers/promises";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -45,6 +47,8 @@ process.env.MINI_LENS_AGENT_DIR = configDir;
 const source = new URL("../extensions/footer-status.ts", import.meta.url);
 const extension = await import(pathToFileURL(source.pathname).href + `?${Date.now()}`);
 
+assert.equal(extension.DEFAULT_SETTINGS["mini-lens-mcp-show"], false, "MCP count defaults to off");
+assert.equal(extension.parseSettings({ "mini-lens-mcp-show": "true" })["mini-lens-mcp-show"], false, "invalid MCP setting falls back to off");
 assert.equal(extension.DEFAULT_SETTINGS["mini-lens-ch-show"], true, "mini-lens-ch-show defaults to true");
 assert.equal(extension.DEFAULT_SETTINGS["mini-lens-session-tokens-show"], true, "session-token display defaults to true");
 assert.equal(extension.DEFAULT_SETTINGS["mini-lens-cache-tokens-show"], true, "cache-token display defaults to true");
@@ -55,7 +59,7 @@ assert.deepEqual(extension.parseSettings({ "mini-lens-ch-show": false }), {
 }, "partial settings merge with safe defaults");
 assert.deepEqual(extension.parseSettings("bad config"), extension.DEFAULT_SETTINGS, "invalid configuration safely falls back to defaults");
 
-const persisted = { ...extension.DEFAULT_SETTINGS, "mini-lens-ch-show": false, onboardingCompleted: true };
+const persisted = { ...extension.DEFAULT_SETTINGS, "mini-lens-ch-show": false, "mini-lens-mcp-show": true, onboardingCompleted: true };
 const configPath = extension.settingsPath(configDir);
 await extension.saveSettings(persisted, configPath);
 assert.deepEqual((await extension.loadSettings(configPath)).settings, persisted, "settings persist to Pi's agent directory");
@@ -68,11 +72,25 @@ const runtimeDir = await mkdtemp(join(tmpdir(), "mini-lens-runtime-"));
 process.env.MINI_LENS_AGENT_DIR = runtimeDir;
 const handlers = new Map();
 const commands = new Map();
+const eventEmitter = new EventEmitter();
+const events = {
+  on(name, handler) { eventEmitter.on(name, handler); return () => eventEmitter.off(name, handler); },
+  emit(name, value) { eventEmitter.emit(name, value); },
+};
+const mcpStatusEvent = "pi-mcp-adapter/status/v1";
+const startupSnapshot = { version: 1, servers: [
+  { name: "connected", disabled: false, status: "connected" },
+  { name: "cached", disabled: false, status: "cached" },
+  { name: "failed", status: "failed" },
+  { name: "disabled", disabled: true, status: "disabled" },
+], connectedCount: 1, totalTools: 99 };
 const pi = {
+  events,
   on(name, handler) { handlers.set(name, handler); },
   registerCommand(name, command) { commands.set(name, command); },
 };
 extension.default(pi);
+events.emit(mcpStatusEvent, startupSnapshot);
 
 let footerFactory;
 let renders = 0;
@@ -106,6 +124,7 @@ const footer = footerFactory({ requestRender() { renders++; } }, theme, {});
 
 let lines = footer.render(100);
 assert.equal(lines.length, 1, "footer always renders one line");
+assert.doesNotMatch(footer.render(140)[0], /MCP/, "startup snapshot does not enable MCP display by default");
 assert.match(lines[0], /^deepseek-v4-flash  high/, "README example model is displayed generically");
 assert.doesNotMatch(lines[0], /deepseek\//, "provider prefix is omitted from the model label");
 assert.ok(lines[0].includes("Total 115K"), "footer shows provider-reported cumulative session tokens");
@@ -172,6 +191,16 @@ const dottedLine = extension.statusLine(ctx, theme, 140, sampleTotals, dotted, 4
 assert.match(dottedLine, /⣿+⣀+/, "dot-matrix bar renders filled and empty cells");
 assert.doesNotMatch(dottedLine, /[█░]/, "dot-matrix mode replaces solid cells");
 assert.equal(extension.parseSettings({ "mini-lens-context-dots-show": "bad" })["mini-lens-context-dots-show"], false);
+const withMcp = { ...extension.DEFAULT_SETTINGS, "mini-lens-mcp-show": true };
+assert.doesNotMatch(extension.statusLine(ctx, theme, 140, sampleTotals, withMcp, 40), /MCP/, "unknown MCP state is hidden and old statusLine calls remain compatible");
+assert.match(extension.statusLine(ctx, theme, 140, sampleTotals, withMcp, 40, undefined, 0), /◇ MCP 0/, "a known empty snapshot displays zero");
+assert.doesNotMatch(extension.settingsPreviewLine(theme, extension.DEFAULT_SETTINGS), /MCP/, "preview defaults to MCP off");
+assert.match(extension.settingsPreviewLine(theme, withMcp), /◇ MCP 3/, "preview provides sample MCP count");
+assert.ok(colorTexts.some(([color, text]) => color === "muted" && text === "◇ MCP 3"), "MCP icon and count use semantic monochrome theme color");
+for (let width = 0; width <= 140; width++) {
+  const line = extension.statusLine(ctx, theme, width, sampleTotals, withMcp, 40, undefined, 123);
+  assert.ok(line.length <= width, `MCP-enabled width ${width} never overflows`);
+}
 const withoutCache = { ...extension.DEFAULT_SETTINGS, "mini-lens-ch-show": false };
 const hiddenCacheLine = extension.statusLine(ctx, theme, 140, sampleTotals, withoutCache, 40);
 assert.doesNotMatch(hiddenCacheLine, /CH 25\.0%/, "mini-lens-ch-show false immediately hides cache hit");
@@ -210,6 +239,29 @@ settingsList.theme.label("Normal option", false);
 assert.deepEqual(colors, ["text"], "unfocused labels are not highlighted");
 assert.match(settingsPreview.text, /deepseek-v4-flash  high  Total 45K  Cached 25K  CH 40\.0%.*500\/1\.0M.*120 tok\/s/, "settings preview uses fixed example data instead of the current session");
 assert.doesNotMatch(settingsPreview.text, /25\.0%|50K\/100K|gpt-5/, "settings preview never reads live session values");
+assert.equal(settingsList.items.find((item) => item.id === "mini-lens-mcp-show")?.currentValue, "off", "settings expose MCP toggle initially off");
+settingsList.setValue("mini-lens-mcp-show", "on");
+assert.match(settingsPreview.text, /◇ MCP 3/, "MCP toggle updates example preview immediately");
+assert.match(footer.render(140)[0], /◇ MCP 3/, "startup broadcast survives session_start and counts enabled, not connected servers or tools");
+let beforeMcpRefresh = renders;
+events.emit(mcpStatusEvent, { version: 1, servers: [{ name: "offline", disabled: false, status: "not-connected" }] });
+assert.ok(renders > beforeMcpRefresh, "status event requests footer refresh");
+assert.match(footer.render(140)[0], /◇ MCP 1/, "later broadcast replaces enabled count");
+for (const payload of [null, undefined, false, "bad", [], {}, { version: 2, servers: [] }, { version: 1, servers: {} },
+  { version: 1, servers: [null] }, { version: 1, servers: [[]] }, { version: 1, servers: ["bad"] },
+  { version: 1, servers: [{ name: 42 }] }, { version: 1, servers: [{ name: "bad", disabled: "false" }] }]) {
+  beforeMcpRefresh = renders;
+  assert.doesNotThrow(() => events.emit(mcpStatusEvent, payload));
+  assert.equal(renders, beforeMcpRefresh, "malformed snapshot does not refresh footer");
+  assert.match(footer.render(140)[0], /◇ MCP 1/, "malformed snapshot preserves last valid count");
+}
+events.emit(mcpStatusEvent, { version: 1, servers: [] });
+assert.match(footer.render(140)[0], /◇ MCP 0/, "shutdown/empty snapshot clears previous count");
+settingsList.setValue("mini-lens-mcp-show", "off");
+assert.doesNotMatch(footer.render(140)[0], /MCP/, "MCP toggle off immediately hides live count");
+events.emit(mcpStatusEvent, startupSnapshot);
+settingsList.setValue("mini-lens-mcp-show", "on");
+assert.match(footer.render(140)[0], /◇ MCP 3/, "events received while hidden remain available when enabled");
 settingsList.setValue("mini-lens-cache-tokens-show", "off");
 assert.doesNotMatch(settingsPreview.text, /Cached 25K/, "changing the cache-token setting updates the preview immediately");
 settingsList.setValue("mini-lens-ch-show", "off");
@@ -223,14 +275,23 @@ for (const width of [40, 20, 8, 3]) {
   assert.equal(lines.length, 1, `width ${width} remains a single-line footer`);
   assert.ok(lines[0].length <= width, `width ${width} never overflows`);
 }
+for (let attempt = 0; attempt < 100; attempt++) {
+  const saved = (await extension.loadSettings(extension.settingsPath(runtimeDir))).settings;
+  if (saved["mini-lens-mcp-show"] && !saved["mini-lens-speed-unit-show"]) break;
+  await setTimeout(10);
+}
+const savedRuntime = (await extension.loadSettings(extension.settingsPath(runtimeDir))).settings;
+assert.equal(savedRuntime["mini-lens-mcp-show"], true, "settings-panel MCP toggle persists to disk");
+assert.equal(savedRuntime["mini-lens-speed-unit-show"], false, "queued settings writes complete in order");
 handlers.get("session_shutdown")({}, ctx);
+assert.equal(eventEmitter.listenerCount(mcpStatusEvent), 0, "shutdown removes shared bus listener for reload");
 
 // A first interactive run previews enabled defaults, offers two explicit choices, and persists Keep defaults.
 const onboardingDir = await mkdtemp(join(tmpdir(), "mini-lens-onboarding-"));
 process.env.MINI_LENS_AGENT_DIR = onboardingDir;
 const onboardingExtension = await import(pathToFileURL(source.pathname).href + `?onboarding=${Date.now()}`);
 const onboardingHandlers = new Map();
-onboardingExtension.default({ on(name, handler) { onboardingHandlers.set(name, handler); }, registerCommand() {} });
+onboardingExtension.default({ events, on(name, handler) { onboardingHandlers.set(name, handler); }, registerCommand() {} });
 const previews = [];
 let customCalls = 0;
 const onboardingCtx = {
@@ -247,6 +308,7 @@ const onboardingCtx = {
 await onboardingHandlers.get("session_start")({}, onboardingCtx);
 assert.deepEqual(previews[0]?.[1], ["Keep defaults", "Configure now"], "onboarding offers explicit default and configure paths");
 assert.match(previews[0]?.[0] ?? "", /Total 45K  Cached 25K  CH 40\.0%.*500\/1\.0M.*120 tok\/s/, "onboarding preview has realistic session, cache, context, and speed data");
+assert.match(previews[0]?.[0] ?? "", /MCP count and dot-matrix style are off by default/, "onboarding describes opt-in fields accurately");
 assert.equal(customCalls, 0, "Keep defaults does not force a settings dialog");
 const savedDefaults = (await onboardingExtension.loadSettings(onboardingExtension.settingsPath(onboardingDir))).settings;
 assert.deepEqual(savedDefaults, { ...onboardingExtension.DEFAULT_SETTINGS, onboardingCompleted: true }, "Keep defaults persists every enabled field and completes onboarding");
@@ -254,7 +316,7 @@ assert.deepEqual(savedDefaults, { ...onboardingExtension.DEFAULT_SETTINGS, onboa
 const configureDir = await mkdtemp(join(tmpdir(), "mini-lens-configure-"));
 process.env.MINI_LENS_AGENT_DIR = configureDir;
 const configureHandlers = new Map();
-onboardingExtension.default({ on(name, handler) { configureHandlers.set(name, handler); }, registerCommand() {} });
+onboardingExtension.default({ events, on(name, handler) { configureHandlers.set(name, handler); }, registerCommand() {} });
 await configureHandlers.get("session_start")({}, { ...onboardingCtx, ui: { ...onboardingCtx.ui, async select() { return "Configure now"; } } });
 assert.equal(customCalls, 1, "Configure now opens the settings list after showing the preview");
 
