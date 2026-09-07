@@ -9,6 +9,7 @@ import { register } from "node:module";
 
 const piModule = `
 export const CONFIG_DIR_NAME = ".pi";
+export const getMarkdownTheme = () => Object.fromEntries(["heading", "link", "linkUrl", "code", "codeBlock", "codeBlockBorder", "quote", "quoteBorder", "hr", "listBullet", "bold", "italic", "strikethrough", "underline"].map(key => [key, text => text]));
 export const getAgentDir = () => process.env.MINI_LENS_AGENT_DIR;
 export const getSettingsListTheme = () => ({});
 export class Container { addChild() {} render() { return []; } invalidate() {} }
@@ -16,6 +17,7 @@ export class Text { constructor() {} }
 export {};
 `;
 const tuiModule = `
+export { Markdown, Marked, matchesKey, isKeyRelease, isKeyRepeat } from "${new URL("../node_modules/@earendil-works/pi-tui/dist/index.js", import.meta.url).href}";
 export const visibleWidth = (text) => String(text).replace(/\\x1b\\[[0-9;]*m/g, "").length;
 export const truncateToWidth = (text, width, suffix = "…") => {
   const plain = String(text).replace(/\\x1b\\[[0-9;]*m/g, "");
@@ -46,6 +48,46 @@ const configDir = await mkdtemp(join(tmpdir(), "mini-lens-test-"));
 process.env.MINI_LENS_AGENT_DIR = configDir;
 const source = new URL("../extensions/footer-status.ts", import.meta.url);
 const extension = await import(pathToFileURL(source.pathname).href + `?${Date.now()}`);
+
+assert.equal(extension.DEFAULT_SETTINGS["mini-lens-minimal-show"], true);
+assert.equal(extension.parseSettings({ "mini-lens-minimal-show": false })["mini-lens-minimal-show"], false);
+const minimalTheme = { bg: (_token, text) => `\x1b[48;2;20;40;30m${text}\x1b[49m`, fg: (_token, text) => text, bold: (text) => text };
+const minimalTurn = { question: "测试问题", process: Array.from({ length: 9 }, (_, i) => `tool entry-${i}`), running: true, final: "secret final" };
+const minimalView = extension.minimalOutputComponent(minimalTheme, () => [minimalTurn]);
+let minimalText = minimalView.render(100).join("\n");
+assert.doesNotMatch(minimalText, /已收起|我们的极简模块|用户提问|最终的结果/);
+assert.doesNotMatch(minimalText, /entry-[0-2]/);
+assert.equal((minimalText.match(/entry-/g) ?? []).length, 6);
+assert.match(minimalText, /Ctrl\+O 展开/);
+assert.match(minimalText, /secret final/);
+minimalTurn.running = false;
+minimalText = minimalView.render(100).join("\n");
+assert.match(minimalText, /secret final/);
+assert.deepEqual(minimalView.render(0), []);
+const stripAnsi = (text) => text.replace(/\x1b\[[0-9;]*m/g, "");
+assert.ok(minimalView.render(12).every((line) => stripAnsi(line).length <= 12));
+for (const width of [1, 2, 12, 40, 100]) {
+  assert.ok(minimalView.render(width).every(line => stripAnsi(line).length <= width));
+}
+assert.doesNotMatch(minimalView.render(100).find((line) => line.includes("secret final")), /\x1b\[48;/);
+const longView = extension.minimalOutputComponent(minimalTheme, () => [{ question: "long question ".repeat(20), process: ["output " + "long output ".repeat(50)], running: true }]);
+assert.ok(longView.render(40).every(line => stripAnsi(line).length <= 40));
+const mixedTurn = { question: "mixed", process: ["tool one", "call a", "skill frontend", "tool two", "call b", "tool three", "skill last"], agentCalls: [{ id: "a", name: "researcher", task: "research", state: "done" }, { id: "b", name: "reviewer", task: "review", state: "running" }] };
+const mixedRows = extension.minimalOutputComponent(minimalTheme, () => [mixedTurn]).render(100);
+assert.equal(mixedRows.filter(row => /^[├└]─/.test(row)).length, 6);
+assert.doesNotMatch(mixedRows.join("\n"), /较早记录/);
+assert.doesNotMatch(mixedRows.join("\n"), /工具 one|Agent 调用/);
+assert.ok(mixedRows.findIndex(row => row.includes("researcher")) < mixedRows.findIndex(row => row.includes("Skill frontend")));
+const mixedExpanded = extension.minimalOutputComponent(minimalTheme, () => [mixedTurn], () => true).render(100);
+assert.equal(mixedExpanded.filter(row => /^[├└]─/.test(row)).length, 7);
+const restoredTurns = extension.minimalTurnsFromBranch(Array.from({ length: 7 }, (_, i) => [
+  { type: "message", message: { role: "user", content: `question-${i}` } },
+  { type: "message", message: { role: "toolResult", content: [{ type: "text", text: "tool output" }] } },
+  { type: "message", message: { role: "assistant", content: [{ type: "text", text: `answer-${i}` }] } },
+]).flat());
+assert.equal(restoredTurns.length, 7, "process limit must not delete conversation turns");
+assert.equal(restoredTurns[6].final, "answer-6");
+assert.deepEqual(restoredTurns[6].process, ["output tool output"]);
 
 assert.equal(extension.DEFAULT_SETTINGS["mini-lens-mcp-show"], false, "MCP count defaults to off");
 assert.equal(extension.parseSettings({ "mini-lens-mcp-show": "true" })["mini-lens-mcp-show"], false, "invalid MCP setting falls back to off");
@@ -220,6 +262,7 @@ const settingsCtx = {
   ...ctx,
   mode: "tui",
   ui: {
+    setWidget() {},
     ...ctx.ui,
     async custom(factory) {
       settingsPanel = factory({ requestRender() {} }, theme, {}, () => {});
@@ -229,7 +272,8 @@ const settingsCtx = {
 await commands.get("mini-lens-settings").handler("", settingsCtx);
 const settingsChildren = settingsPanel.render(100);
 const settingsPreview = settingsChildren[2];
-const settingsList = settingsChildren[3];
+assert.deepEqual(settingsChildren[3].items.map((item) => item.label), ["Lens", "极简输出"]);
+const settingsList = settingsChildren[3].items[0].submenu("", () => {});
 colors.length = 0;
 settingsList.theme.label("Focused option", true);
 settingsList.theme.value("off", true);
@@ -286,6 +330,81 @@ assert.equal(savedRuntime["mini-lens-speed-unit-show"], false, "queued settings 
 handlers.get("session_shutdown")({}, ctx);
 assert.equal(eventEmitter.listenerCount(mcpStatusEvent), 0, "shutdown removes shared bus listener for reload");
 
+// Exercise the real extension event wiring, including no early final and adapter restoration.
+const minimalHandlers = new Map();
+const minimalCommands = new Map();
+extension.default({ events, on(name, handler) { minimalHandlers.set(name, handler); }, registerCommand(name, command) { minimalCommands.set(name, command); } });
+const box = (children = []) => ({ children, render: () => [], invalidate() {} });
+const doc = box([box(), box(), box()]);
+const originalDocRender = doc.render;
+let transcriptRenders = 0;
+const testTui = { children: [doc, box(), box(), box(), box([{ getText() {}, render: () => [], invalidate() {} }]), box(), box()], requestRender() { transcriptRenders++; } };
+let inputListener;
+const minimalCtx = { ...ctx, mode: "tui", hasUI: false, sessionManager: { getBranch: () => [] }, ui: { ...ctx.ui, onTerminalInput(handler) { inputListener = handler; return () => { inputListener = undefined; }; }, setWidget(_key, factory) { if (factory) assert.deepEqual(factory(testTui, theme).render(100), [], "dock must remain empty"); } } };
+await minimalHandlers.get("session_start")({}, minimalCtx);
+await minimalCommands.get("mini-lens-minimal").handler("on", minimalCtx);
+minimalHandlers.get("message_start")({ message: { role: "user", content: "live question" } });
+minimalHandlers.get("message_start")({ message: { role: "assistant" } });
+minimalHandlers.get("message_update")({ assistantMessageEvent: { partial: { content: [{ type: "thinking", thinking: "live thought" }, { type: "text", text: "unreleased final" }] } } });
+assert.match(doc.render(100).join("\n"), /live thought/);
+minimalHandlers.get("message_update")({ assistantMessageEvent: { partial: { content: [{ type: "thinking", thinking: "live thought updated\nnew paragraph" }, { type: "text", text: "unreleased final" }] } } });
+assert.equal(doc.render(100).filter(line => line.includes("Ctrl+O")).length, 1);
+assert.match(doc.render(100).join("\n"), /new paragraph/);
+
+assert.match(doc.render(100).join("\n"), /unreleased final/);
+minimalHandlers.get("tool_execution_start")({ toolCallId: "waiting", toolName: "bash", args: { command: "curl --max-time 20 https://example.com" } });
+for (const partialResult of [{ content: [] }, { content: [{ type: "text", text: "  " }] }]) {
+  minimalHandlers.get("tool_execution_update")({ toolCallId: "waiting", partialResult });
+}
+assert.match(doc.render(100).join("\n"), /正在执行 bash · 已等待 0 秒/);
+assert.doesNotMatch(doc.render(100).join("\n"), /"content"/);
+const rendersBeforeWaiting = transcriptRenders;
+await setTimeout(1100);
+assert.ok(transcriptRenders > rendersBeforeWaiting, "waiting status refreshes without tool output");
+assert.match(doc.render(100).join("\n"), /已等待 [1-9]\d* 秒/);
+minimalHandlers.get("tool_execution_update")({ toolCallId: "waiting", partialResult: { content: [{ type: "text", text: "real output" }] } });
+minimalHandlers.get("tool_execution_update")({ toolCallId: "waiting", partialResult: { content: [] } });
+assert.match(doc.render(100).join("\n"), /real output/);
+assert.doesNotMatch(doc.render(100).join("\n"), /已等待|"content"/);
+minimalHandlers.get("tool_execution_end")({ toolCallId: "waiting", result: { content: [] }, isError: true });
+assert.match(doc.render(100).join("\n"), /调用失败/);
+assert.doesNotMatch(doc.render(100).join("\n"), /已等待|"content"/);
+for (let i = 0; i < 8; i++) {
+  minimalHandlers.get("tool_execution_start")({ toolCallId: String(i), toolName: "read", args: { path: i === 0 ? "/skills/frontend/SKILL.md" : `file-${i}` } });
+  minimalHandlers.get("tool_execution_update")({ toolCallId: String(i), partialResult: { content: [{ type: "text", text: `stream-${i}` }] } });
+  minimalHandlers.get("tool_execution_end")({ toolCallId: String(i), result: { content: [{ type: "text", text: `done-${i}` }] } });
+}
+assert.doesNotMatch(doc.render(100).join("\n"), /done-0|stream-7/);
+assert.match(doc.render(100).join("\n"), /done-7/);
+minimalHandlers.get("message_end")({ message: { role: "assistant", content: [{ type: "text", text: "unreleased final" }], stopReason: "stop" } });
+assert.match(doc.render(100).join("\n"), /unreleased final/);
+assert.deepEqual(inputListener("\x1b[111;5:1u"), { consume: true });
+assert.match(doc.render(100).join("\n"), /done-0/);
+for (const data of ["\x1b[111;5:2u", "\x1b[111;5:3u"]) {
+  assert.deepEqual(inputListener(data), { consume: true });
+  assert.match(doc.render(100).join("\n"), /done-0/, "repeat/release must preserve expansion");
+}
+minimalHandlers.get("tool_execution_update")({ toolCallId: "7", partialResult: { content: [{ type: "text", text: "updated while expanded" }] } });
+assert.match(doc.render(100).join("\n"), /done-0/, "stream updates preserve expansion");
+assert.deepEqual(inputListener("\x0f"), { consume: true });
+assert.doesNotMatch(doc.render(100).join("\n"), /done-0/);
+minimalHandlers.get("tool_execution_start")({ toolCallId: "agent-1", toolName: "subagent", args: { agent: "reviewer", task: "private long task details" } });
+assert.match(doc.render(100).join("\n"), /调用与过程/);
+assert.doesNotMatch(doc.render(100).join("\n"), /private long task details/);
+minimalHandlers.get("tool_execution_update")({ toolCallId: "agent-1", partialResult: { content: [] } });
+minimalHandlers.get("tool_execution_end")({ toolCallId: "agent-1", result: { content: [{ type: "text", text: "Background launched" }] } });
+assert.match(doc.render(100).join("\n"), /已完成/);
+inputListener("\x0f");
+assert.match(doc.render(100).join("\n"), /private long task details/);
+assert.match(doc.render(100).join("\n"), /Background launched/);
+inputListener("\x0f");
+minimalHandlers.get("agent_settled")({});
+assert.match(doc.render(100).join("\n"), /unreleased final/);
+await minimalCommands.get("mini-lens-minimal").handler("off", minimalCtx);
+assert.equal(doc.render, originalDocRender);
+assert.equal(inputListener, undefined);
+minimalHandlers.get("session_shutdown")({}, minimalCtx);
+
 // A first interactive run previews enabled defaults, offers two explicit choices, and persists Keep defaults.
 const onboardingDir = await mkdtemp(join(tmpdir(), "mini-lens-onboarding-"));
 process.env.MINI_LENS_AGENT_DIR = onboardingDir;
@@ -299,6 +418,7 @@ const onboardingCtx = {
   mode: "tui",
   hasUI: true,
   ui: {
+    setWidget() {},
     setFooter() {},
     notify() {},
     async select(title, choices) { previews.push([title, choices]); return "Keep defaults"; },

@@ -8,6 +8,23 @@
 
 A compact, configurable footer for [Pi](https://pi.dev). Your model, usage, cost estimate, context, and generation speed — at a glance.
 
+## Minimal output
+
+`/mini-lens-settings` now has **Lens** and **极简输出 (Minimal output)** submenus. Minimal mode is on by default; explicit off settings are respected.
+
+- `/mini-lens-minimal on` shows the user's Markdown on an accent-tinted surface, a background-free process summary, and the final reply without a heading or extra background. No duplicate dock panel.
+- Each turn uses one shared tree showing the latest **six summary entries**: available thinking, tool calls, streaming tool output, and skill reads. `Ctrl+O` expands the full Markdown process and toggles it closed again; new questions start collapsed; tools without output show an elapsed wait counter, and empty progress events never overwrite existing content; there are no section headings, collapsed counts, or completion labels. Original session messages remain intact.
+- Agent/subagent calls share the same chronological tree as tools and skills; `Ctrl+O` reveals tasks and Markdown output. A returned call does not imply background completion.
+- The pi-subagents `async subagent` / `Async agents` widget uses a background-free status tree, retaining native detail shortcuts and output paths. This adapter is active only in minimal mode, restores on disable, and passes unknown formats through. Grouping design reference: [pi-cc-extensions](https://github.com/minuque/pi-cc-extensions).
+- `/mini-lens-history` browses complete process entries, five at a time.
+- Final Markdown streams as text events arrive; failures and interruptions are indicated.
+- `/reload` remounts the transcript, including history created in native mode. Expanded tree rails continue through paragraphs, blank lines and code blocks.
+- `/mini-lens-minimal off` restores native rendering.
+
+The user surface blends the active Pi accent with its user background. Process and answer text have no background. User padding is two terminal columns horizontally and one row vertically. Markdown, highlighted code, tables and Mermaid terminal diagrams work in light/dark themes; incomplete, unsupported or over-wide diagrams retain their source. **Minimal mode uses a private Pi 0.85.x layout adapter**, without patching the Pi installation. Unknown layouts refuse activation and retain native output. Recheck compatibility after Pi upgrades; another extension replacing the transcript may conflict.
+
+Checks: `npm run check && npm test`. Real terminal smoke test: `python3 test/minimal-pty.py` (Python 3, Node, and the installed dependency's bundled Pi CLI). It uses temporary fixtures, tests regular/fullscreen, toggling, six-entry process and Ctrl+O expand/collapse, restored results, and narrow terminals, without model calls.
+
 ## Install
 
 ```bash

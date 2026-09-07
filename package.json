@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "check": "tsc --noEmit -p tsconfig.json",
-    "test": "node test/footer-status-self-check.mjs && node test/settings-interaction.mjs && node test/publish-self-check.mjs"
+    "test": "node test/footer-status-self-check.mjs && node test/settings-interaction.mjs && node test/transcript-adapter.mjs && node test/minimal-markdown.mjs && node test/agent-view.mjs && node test/publish-self-check.mjs"
   },
   "license": "MIT",
   "author": "eachann1024",
@@ -36,6 +36,7 @@
   },
   "files": [
     "extensions",
+    "lib",
     "README.md",
     "README.zh-CN.md",
     "LICENSE"
@@ -48,5 +49,8 @@
     "@earendil-works/pi-tui": "^0.85.0",
     "@types/node": "^26.4.1",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "grok-mermaid": "0.2.2"
   }
 }

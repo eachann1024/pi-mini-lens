@@ -9,6 +9,7 @@ import { setTimeout } from "node:timers/promises";
 // Keep real TUI components, but avoid loading the unrelated Pi server runtime.
 const piStub = `data:text/javascript,${encodeURIComponent(`
 export const CONFIG_DIR_NAME = ".pi";
+export const getMarkdownTheme = () => Object.fromEntries(["heading", "link", "linkUrl", "code", "codeBlock", "codeBlockBorder", "quote", "quoteBorder", "hr", "listBullet", "bold", "italic", "strikethrough", "underline"].map(key => [key, text => text]));
 export const getSettingsListTheme = () => ({
   hint: (text) => text, description: (text) => text,
 });
@@ -29,11 +30,14 @@ const theme = {
 await commands.get("mini-lens-settings").handler("", {
   mode: "tui",
   ui: {
+    setWidget() {},
     notify() {},
     async custom(factory) { panel = factory({ requestRender() {} }, theme, {}, () => {}); },
   },
 });
 const plain = (line) => line.replace(/\x1b\[[0-9;]*m/g, "");
+assert.match(panel.render(100).join("\n"), /极简输出/);
+panel.handleInput("\r"); // Enter the Lens group.
 for (const width of [140, 80, 40]) {
   let lines = panel.render(width);
   const row = lines.findIndex((line) => plain(line).includes("Show thinking level"));
