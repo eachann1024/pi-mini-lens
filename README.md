@@ -28,7 +28,7 @@ Checks: `npm run check && npm test`. Real terminal smoke test: `python3 test/min
 ## Install
 
 ```bash
-pi install npm:pi-mini-mode
+pi install npm:@each1024/pi-mini-mode
 ```
 
 Run `/reload` in Pi. Requires **Pi ≥ 0.84.0**.
@@ -158,7 +158,7 @@ The price is the same finalized active-branch usage and configured per-million-t
 Install only the local copy while developing; installing npm and local copies together double-registers the extension:
 
 ```bash
-pi remove npm:pi-mini-mode && pi install /path/to/pi-rolling-process
+pi remove npm:@each1024/pi-mini-mode && pi install /path/to/pi-rolling-process
 npm run check
 npm test
 ```
@@ -171,7 +171,7 @@ After source changes, run `/reload` in an already-open Pi session. `npm run chec
 
 Pushes to `main` automatically publish to npm after `npm ci`, `npm run check`, and `npm test`; the workflow also supports manual dispatch on `main`. Each release uses the higher of the local version baseline and npm's latest stable version plus one patch. Versions change only in the runner, with no version commits or tags; raise the baseline in `package.json` and the lockfile for a major/minor release. Already-published commits are skipped. Actions concurrency can replace pending pushes, so not every push (or every commit within a push) is guaranteed a separate package release.
 
-One-time setup: publish the initial `1.3.1` package using an authenticated maintainer account, then configure its npm **Trusted Publisher** for GitHub owner `eachann1024`, repository `pi-mini-mode`, workflow `publish.yml` (no environment), allowing direct `npm publish`. Subsequent releases use OIDC and provenance, without an npm token.
+One-time setup: publish the initial `@each1024/pi-mini-mode@1.3.1` package using an authenticated maintainer account, then configure its npm **Trusted Publisher** for GitHub owner `eachann1024`, repository `pi-mini-mode`, workflow `publish.yml` (no environment), allowing direct `npm publish`. Subsequent releases use OIDC and provenance, without an npm token.
 
 ---
 
