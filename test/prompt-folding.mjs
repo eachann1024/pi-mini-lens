@@ -113,7 +113,7 @@ try {
   const handlers = new Map();
   const commands = new Map();
   await writeFile(join(dir, 'mini-lens.json'), JSON.stringify({ 'mini-lens-minimal-show': true, onboardingCompleted: true }));
-  extension({ events: { on() { return () => {}; } }, on(name, fn) { handlers.set(name, fn); }, registerCommand(name, command) { commands.set(name, command); } });
+  extension({ events: { on() { return () => {}; } }, on(name, fn) { handlers.set(name, fn); }, registerCommand(name, command) { commands.set(name, command); }, registerEntryRenderer() {}, appendEntry() {} });
   let cancel = false;
   const ctx = { mode: 'tui', hasUI: true, sessionManager: { getBranch: () => turns.map(turn => ({ type: 'message', message: { role: 'user', content: turn.question } })) }, ui: {
     theme, setFooter() {}, notify() {}, onTerminalInput(listener) { return tui.addInputListener(listener); },

@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import type { getLayoutNode as GetLayoutNode } from "@earendil-works/pi-tui/dist/layout-node.js";
 
 interface StickyToolView {
-  pinnedTool(): { id: string; y: number; line: string } | undefined;
+  pinnedTool(): { id: string; y: number; line: string; autoScroll?: boolean } | undefined;
   unpinTool(): void;
   toggleTool(id: string): void;
 }
@@ -56,6 +56,16 @@ export function attachStickyTool(tui: unknown, document: Component, view: Sticky
         shown = undefined;
         previousY = undefined;
         return [];
+      }
+      if (target.autoScroll === false) {
+        // SubAgent details expand where they were clicked. Do not reserve a
+        // heading row or move the viewport until its original row scrolls past.
+        currentId = target.id;
+        previousY = target.y;
+        previousTop = transcript.scrollTop;
+        shown = transcript.scrollTop > target.y ? target : undefined;
+        setMinHeight(0);
+        return shown ? [truncateToWidth(width < 5 ? "▾" : shown.line, width, "")] : [];
       }
       // The next viewport can grow before ScrollView exposes its new height.
       // Reserve a terminal-height tail so resize/dock shrink cannot clamp past

@@ -92,6 +92,17 @@ export function normalizeProseMarkdown(source: string): string {
   return parser.lexer(source).map(rewrite).join("");
 }
 
+/** Markdown is rendered only for semantic prose bodies; structured tool output stays literal. */
+export function isMarkdownProse(source: string): boolean {
+  const text = source.trim();
+  if (!text || /^(?:\{[\s\S]*\}|\[[\s\S]*\])$/.test(text)) {
+    try { JSON.parse(text); return false; } catch { /* a Markdown list may start with [ */ }
+  }
+  if (/^(?:\s*```|\s*#{1,6}\s|\s*>\s|\s*(?:[-+*]\s+|\d+[.)]\s))/m.test(text)) return true;
+  return /(?:\*\*|__|~~|`[^`\n]+`|\[[^\]\n]+\]\([^\n)]+\))/.test(text)
+    && !/^(?:const|let|var|function|class|import|export|SELECT|INSERT|UPDATE|DELETE)\b/m.test(text);
+}
+
 /** Keep incomplete, unsupported and over-wide diagrams readable as source. */
 export function diagramMarkdown(source: string, width: number): string {
   return parser.lexer(normalizeProseMarkdown(source)).map((token) => {

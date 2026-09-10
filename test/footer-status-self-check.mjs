@@ -109,16 +109,51 @@ for (const accent of ["\x1b[34m", "\x1b[35m"]) {
   const view = extension.minimalOutputComponent(theme, () => [{ question: 'CORS', process: ['thinking Clarifying CORS behavior'], running: false }], () => expanded);
   const text = stripAnsi(view.render(100).join('\n'));
   assert.match(text, /Agent · 1\/1/, 'collapse does not change process totals');
-  assert.equal(text.includes('Thinking Clarifying CORS behavior'), expanded);
+  assert.equal(text.includes('Thinking 0:00 Clarifying CORS behavior'), expanded);
 }
 const settled = extension.minimalOutputComponent(theme, () => [{ question: 'settled', process: [], usage: { totalTokens: 10 }, running: false }]);
   const settledText = stripAnsi(settled.render(100).join('\n'));
   assert.doesNotMatch(settledText, /Thinking|0\/0/);
   assert.match(settledText, /S 10 \/ C 0/);
 }
+assert.equal(extension.formatElapsed(0, 0), "0:00");
+assert.equal(extension.formatElapsed(0, 3_723_000), "1:02:03");
+const elapsedColors = [];
+const elapsedTheme = { ...minimalTheme, fg: (token, text) => { elapsedColors.push([token, text]); return text; } };
+const savedElapsedNow = Date.now;
+try {
+  const thought = "The thinking body scrolls through later Unicode 内容 instead of staying at the beginning";
+  const elapsedView = extension.minimalOutputComponent(elapsedTheme, () => [{ question: "elapsed", process: [`thinking ${thought}`], running: true, startedAt: 0, thinking: 0 }]);
+  Date.now = () => 0;
+  const scrollStart = stripAnsi(elapsedView.render(46).find(line => line.includes("Thinking")));
+  Date.now = () => 560;
+  const fastScroll = stripAnsi(elapsedView.render(46).find(line => line.includes("Thinking")));
+  assert.notEqual(fastScroll, scrollStart, "80ms scrolling advances the overflowing body within 560ms (over three times the former 250ms pace)");
+  Date.now = () => 2_000;
+  const first = stripAnsi(elapsedView.render(46).find(line => line.includes("Thinking")));
+  Date.now = () => 4_000;
+  const later = stripAnsi(elapsedView.render(46).find(line => line.includes("Thinking")));
+  assert.match(first, /Thinking 0:02/, "elapsed duration follows Thinking before its body");
+  assert.match(later, /Thinking 0:04/, "elapsed duration advances without resetting during the turn");
+  assert.notEqual(first, later, "long active thinking body horizontally scrolls while its prefix remains fixed");
+  assert.ok(elapsedColors.some(([token, text]) => token === "success" && text === " 0:02"), "running elapsed duration uses the semantic green success color");
+  const completedThought = extension.minimalOutputComponent(elapsedTheme, () => [{ question: "elapsed", process: [`thinking ${thought}`], running: false, startedAt: 0 }], () => true);
+  assert.match(stripAnsi(completedThought.render(100).join("\n")), /Thinking 0:04/, "completed Thinking retains its final elapsed duration when expanded");
+  assert.ok(elapsedColors.some(([token, text]) => token === "muted" && text === " 0:04"), "completed Thinking duration uses the semantic gray muted color");
+  assert.ok(elapsedView.render(12).every(line => stripAnsi(line).length <= 12), "narrow rows retain the width contract");
+} finally { Date.now = savedElapsedNow; }
+const dotTheme = { ...minimalTheme, fg: (token, text) => `<${token}>${text}</${token}>` };
+const dotRows = extension.minimalOutputComponent(dotTheme, () => [{
+  question: "dot colors",
+  process: ["call expandable", "output passive"],
+  agentCalls: [{ id: "expandable", name: "read", task: "path", state: "done" }],
+}]).render(100).join("\n");
+assert.match(dotRows, /<accent>●<\/accent>.*read/, "expandable tool dot uses the accent token");
+assert.match(dotRows, /<muted>●<\/muted>.*Output/, "non-expandable output dot uses the muted token");
 const mixedTurn = { question: "mixed", process: ["tool one", "call a", "skill frontend", "tool two", "call b", "tool three", "skill last"], agentCalls: [{ id: "a", name: "researcher", task: "research", state: "done" }, { id: "b", name: "reviewer", task: "review", state: "running" }] };
 const mixedRows = extension.minimalOutputComponent(minimalTheme, () => [mixedTurn]).render(100);
 assert.equal(mixedRows.filter(row => /^[├└]─/.test(row)).length, 5);
+assert.doesNotMatch(mixedRows.join("\n"), /S 0 \/ C 0/);
 assert.doesNotMatch(mixedRows.join("\n"), /较早记录/);
 assert.doesNotMatch(mixedRows.join("\n"), /工具 one|Agent 调用/);
 assert.ok(mixedRows.findIndex(row => row.includes("researcher")) < mixedRows.findIndex(row => row.includes("Skill last")));
@@ -153,11 +188,8 @@ expandIntegrated = true;
 assert.equal(integratedView.render(120).filter(row => /^[├└]─/.test(row)).length, 45, 'Ctrl+S does not change the terminal grace period');
 const savedNow = Date.now;
 try {
-  const deadline = integratedView.agentExpiry();
-  Date.now = () => deadline - 1;
-  assert.match(integratedView.render(120).join('\n'), /CHILD_/);
-  Date.now = () => deadline + 10_000;
-  assert.doesNotMatch(integratedView.render(120).join('\n'), /Subagent|CHILD_/);
+  Date.now = () => savedNow() + 60_000;
+  assert.match(integratedView.render(120).join('\n'), /Subagent|CHILD_/);
   assert.match(integratedView.render(120).join('\n'), /FINAL_REPLY|S 320K/);
 } finally { Date.now = savedNow; }
 const controlCall = { id: 'control', name: 'worker', tool: 'subagent', action: 'list', task: '', state: 'done', output: 'Executable agents (capabilities):\nRAW_DIAGNOSTIC' };
@@ -539,7 +571,7 @@ assert.doesNotMatch(doc.render(100).join("\n"), /Thinking/);
 minimalHandlers.get("message_start")({ message: { role: "custom", customType: "subagent-result", content: "child returned" } });
 minimalHandlers.get("message_start")({ message: { role: "assistant" } });
 minimalHandlers.get("message_update")({ assistantMessageEvent: { partial: { content: [{ type: "thinking", thinking: "Review returned result" }] } } });
-assert.match(doc.render(100).join("\n"), /Thinking Review returned result/);
+assert.match(doc.render(100).join("\n"), /Thinking \d+:\d\d Review returned result/);
 minimalHandlers.get("message_update")({ assistantMessageEvent: { partial: { content: [{ type: "thinking", thinking: "Review returned result" }, { type: "text", text: "Follow-up answer" }] } } });
 assert.doesNotMatch(doc.render(100).join("\n"), /Thinking/);
 assert.match(doc.render(100).join("\n"), /unreleased final[\s\S]*Follow-up answer/);
@@ -563,7 +595,7 @@ assert.match(doc.render(100).join("\n"), /Subagent 0\/1[\s\S]*child summary[\s\S
 assert.deepEqual(testTui.children[3].render(100), [], 'nothing is rendered in the dock');
 assert.doesNotMatch(doc.render(100).join("\n"), /child detail/);
 inputListener("\x13");
-assert.doesNotMatch(doc.render(100).join("\n"), /child detail/, "child stays single-line after Ctrl+S");
+assert.match(doc.render(100).join("\n"), /child detail/, "Ctrl+S reveals retained child detail");
 minimalHandlers.get("message_start")({ message: { role: "user", content: "new question" } });
 assert.match(doc.render(100).join("\n"), /child summary[\s\S]*new question/, "running child remains under its original turn after a new user message");
 minimalHandlers.get("tool_execution_start")({ toolCallId: "agent-2", toolName: "subagent", args: { agent: "reviewer" } });
@@ -578,14 +610,14 @@ const realNow = Date.now;
 try {
   const elapsed = realNow() + 20_000;
   Date.now = () => elapsed;
-  const beforeExpiry = transcriptRenders;
+  const beforeRetention = transcriptRenders;
   await setTimeout(150);
-  assert.ok(transcriptRenders > beforeExpiry, 'idle terminal expiry actively requests repaint');
-  assert.doesNotMatch(doc.render(100).join('\n'), /Subagent|completed child/);
+  assert.ok(transcriptRenders >= beforeRetention, 'idle completed child does not schedule expiry redraws');
+  assert.match(doc.render(100).join('\n'), /Subagent|completed child/);
   inputListener('\x13');
-  assert.doesNotMatch(doc.render(100).join('\n'), /Subagent|completed child/, 'expanded expiry stays hidden');
+  assert.match(doc.render(100).join('\n'), /completed child/, 'expanded completed child stays visible');
   await minimalCommands.get('mini-lens-minimal').handler('on', minimalCtx);
-  assert.doesNotMatch(doc.render(100).join('\n'), /Subagent|completed child/, 'remount retains terminal tombstones');
+  assert.match(doc.render(100).join('\n'), /Subagent|completed child/, 'remount retains current-session completed children');
 } finally { Date.now = realNow; }
 assert.deepEqual(testTui.children[3].render(100), []);
 await minimalCommands.get("mini-lens-minimal").handler("off", minimalCtx);

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { Container, Text, ScrollView, visibleWidth } from '@earendil-works/pi-tui';
-import { attachTranscript, compactSupervisorNotice } from '../lib/transcript-adapter.ts';
+import { initTheme } from '../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
+initTheme('dark', false);
+const { attachTranscript, compactSupervisorNotice } = await import('../lib/transcript-adapter.ts');
 
 // Real Pi TUI container and ScrollView objects, not an imitation of their render path.
 const document = new Container();
@@ -122,6 +124,20 @@ restoreReceipt();
 const restoreReceiptAgain = attachTranscript(tui, receiptView);
 assert.match(document.render(80).join('\n'), /CHILD COMPLETION RECEIPT/);
 restoreReceiptAgain();
+
+// Pi rebuilds this native, initially folded component after a successful compaction.
+// Minimal mode must retain its success row at the preceding user turn.
+class CompactionSummaryMessageComponent extends Text {}
+chat.clear();
+chat.addChild(new UserMessageComponent('EARLIER TURN'));
+chat.addChild(new UserMessageComponent('COMPACTION TURN'));
+chat.addChild(new CompactionSummaryMessageComponent('[compaction] Compacted from 1,024 tokens (Ctrl+O to expand)', 0, 0));
+const compactionView = { invalidate() {}, render(_width, notices) {
+  return ['EARLIER TURN', ...(notices.get(0) ?? []), 'COMPACTION TURN', ...(notices.get(1) ?? [])];
+} };
+const restoreCompaction = attachTranscript(tui, compactionView);
+assert.deepEqual(document.render(80).map(row => row.trim()), ['HEADER', 'EARLIER TURN', 'COMPACTION TURN', '[compaction] Compacted from 1,024 tokens (Ctrl+O to expand)']);
+restoreCompaction();
 console.log('notification check ok (expiry, update, resize, turn placement, cleanup, session clear)');
 
 const supervisorTheme = { fg: (color, text) => `\x1b[${color === 'error' ? 31 : color === 'warning' ? 33 : 34}m${text}\x1b[0m` };

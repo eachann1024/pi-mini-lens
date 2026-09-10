@@ -21,7 +21,7 @@ const dir = await mkdtemp(join(tmpdir(), "mini-lens-pointer-"));
 process.env.MINI_LENS_AGENT_DIR = dir;
 process.env.LANG = "en_US.UTF-8";
 const commands = new Map();
-extension({ events: { on() { return () => {}; } }, on() {}, registerCommand(name, command) { commands.set(name, command); } });
+extension({ events: { on() { return () => {}; } }, on() {}, registerCommand(name, command) { commands.set(name, command); }, registerEntryRenderer() {}, appendEntry() {} });
 let panel;
 const theme = {
   bg(color, text) { assert.equal(color, "selectedBg"); return `\x1b[47m${text}\x1b[49m`; },

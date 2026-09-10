@@ -64,9 +64,12 @@ try {
   scroll.scrollTo(0); await paint();
   click(3, subagentY() - scroll.scrollTop); await paint();
   assert.match(docRows().join('\n'), /SUBAGENT_DETAIL_0/, 'SubAgent row expands its corresponding content');
-  assert.equal(view.pinnedSubagent()?.id, 'subagent-pin', 'expanded SubAgent supplies its sticky collapse header');
+  assert.equal(scroll.scrollTop, 0, 'expanding a SubAgent keeps the user at the clicked viewport position');
+  assert.doesNotMatch(screen()[0], /SubAgent/, 'expanding does not immediately pin the SubAgent heading');
+  scroll.scrollTo(subagentY() + 1); await paint();
+  assert.match(screen()[0], /SubAgent/, 'SubAgent heading pins only after scrolling past its original row');
   click(12, 0); await paint();
-  assert.equal(view.pinnedSubagent(), undefined, 'SubAgent heading collapses on click');
+  assert.equal(view.pinnedSubagent(), undefined, 'SubAgent sticky heading collapses on click');
   assert.doesNotMatch(docRows().join('\n'), /SUBAGENT_DETAIL_0/, 'sticky header collapse hides the SubAgent content');
   const finalText = turn.final;
   turn.final = '';
@@ -225,7 +228,7 @@ const ctx = { mode: 'tui', hasUI: true, sessionManager: { getBranch: () => branc
 } };
 try {
   await writeFile(join(configDir, 'mini-lens.json'), JSON.stringify({ 'mini-lens-minimal-show': true, onboardingCompleted: true }));
-  extension({ events: { on() { return () => {}; } }, on(name, fn) { handlers.set(name, fn); }, registerCommand() {} });
+  extension({ events: { on() { return () => {}; } }, on(name, fn) { handlers.set(name, fn); }, registerCommand() {}, registerEntryRenderer() {}, appendEntry() {} });
   tui.setLayoutRoot(originalRoot);
   await handlers.get('session_start')({}, ctx);
   await handlers.get('message_start')({ message: { role: 'assistant', content: [] } }, ctx);

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "check": "tsc --noEmit -p tsconfig.json",
-    "test": "node test/footer-status-self-check.mjs && node test/settings-interaction.mjs && node test/transcript-adapter.mjs && node test/prompt-folding.mjs && node test/tool-folding.mjs && node test/sticky-tool.mjs && node test/minimal-markdown.mjs && node test/agent-view.mjs && node test/publish-self-check.mjs"
+    "test": "node test/footer-status-self-check.mjs && node test/settings-interaction.mjs && node test/transcript-adapter.mjs && node test/prompt-folding.mjs && node test/tool-folding.mjs && node test/sticky-tool.mjs && node test/minimal-markdown.mjs && node test/agent-view.mjs && node test/publish-self-check.mjs && node test/compaction-transcript.mjs"
   },
   "license": "MIT",
   "author": "eachann1024",
@@ -50,6 +50,7 @@
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.85.0",
+    "@earendil-works/pi-server": "0.85.0",
     "@earendil-works/pi-tui": "^0.85.0",
     "@types/node": "^26.4.1",
     "typescript": "^5.9.3"

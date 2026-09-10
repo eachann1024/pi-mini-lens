@@ -1,9 +1,9 @@
-import { agentCall, agentCallDisplay, attachAgentWidgets, currentAgentStatuses, isAgentTool, liveAgentView, readAgentStatuses, runningGlyph, type AgentCall } from "../lib/agent-view.ts";
+import { agentCall, agentCallDisplay, agentStatusesByTurn, attachAgentWidgets, isAgentTool, liveAgentView, readAgentStatuses, runningGlyph, type AgentCall } from "../lib/agent-view.ts";
 import { CONFIG_DIR_NAME, getSettingsListTheme, getMarkdownTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { attachTranscript, type NoticeRows, type TurnNotices } from "../lib/transcript-adapter.ts";
 import { diagramMarkdown, minimalMarkdownTheme } from "../lib/minimal-markdown.ts";
 import { minimalSurface, secondaryAccent } from "../lib/minimal-theme.ts";
-import { Container, Markdown, matchesKey, isKeyRelease, isKeyRepeat, type SettingItem, SettingsList, Text, type TuiMouseEvent, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, Markdown, matchesKey, isKeyRelease, isKeyRepeat, sliceByColumn, type SettingItem, SettingsList, Text, type TuiMouseEvent, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { stripVTControlCharacters } from "node:util";
@@ -369,12 +369,15 @@ export interface MinimalTurn {
   final?: string;
   replies?: string[];
   running?: boolean;
+  /** Wall-clock start of this user-request execution; retained across tool and thinking turns. */
+  startedAt?: number;
   thinking?: number;
   awaitingResponse?: boolean;
   waitingTools?: Array<{ id: string; name: string; startedAt: number }>;
 }
 
 const PROCESS_PREVIEW_LIMIT = 180;
+const THINKING_SCROLL_INTERVAL_MS = 80;
 
 function contentText(content: unknown): string {
   if (typeof content === "string") return content.trim();
@@ -399,6 +402,14 @@ function preview(value: unknown): string {
 
 function processText(value: unknown): string {
   return contentText(value) || (value === undefined ? "" : JSON.stringify(value) ?? "");
+}
+
+/** Format an execution duration without losing hours once a long run crosses one. */
+export function formatElapsed(startedAt: number | undefined, now = Date.now()): string {
+  const seconds = Math.max(0, Math.floor((now - (startedAt ?? now)) / 1_000));
+  const minutes = Math.floor(seconds / 60);
+  const remainder = String(seconds % 60).padStart(2, "0");
+  return minutes >= 60 ? `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, "0")}:${remainder}` : `${minutes}:${remainder}`;
 }
 
 function pushProcess(turn: MinimalTurn | undefined, kind: string, value: unknown): void {
@@ -523,14 +534,24 @@ export function minimalOutputComponent(theme: ExtensionContext["ui"]["theme"], g
   const expandedPrompts = new Map<number, string>();
   const expandedSubagents = new Set<string>();
   const expandedTools = new Set<string>();
+  const expandedThinking = new Set<string>();
   let pinnedToolId: string | undefined;
   let pinnedTool: { id: string; y: number; line: string } | undefined;
   let pinnedSubagentId: string | undefined;
-  let pinnedSubagent: { id: string; y: number; line: string } | undefined;
+  let pinnedSubagent: { id: string; y: number; line: string; autoScroll?: boolean } | undefined;
   let toolControls: Array<{ id: string; y: number; width: number; title: string }> = [];
   let hoveredTool: typeof toolControls[number] | undefined;
   const clearHover = () => { const changed = !!hoveredTool; hoveredTool = undefined; return changed; };
   const toggleTool = (id: string) => {
+    if (id.startsWith("thinking:")) {
+      const present = getTurns().some((turn, turnIndex) => turn.process.some((entry, processIndex) =>
+        entry.startsWith("thinking") && `thinking:${turnIndex}:${processIndex}` === id));
+      if (!present) return;
+      if (expandedThinking.has(id)) expandedThinking.delete(id);
+      else expandedThinking.add(id);
+      clearHover();
+      return;
+    }
     if (!getTurns().some(turn => turn.agentCalls?.some(call => call.id === id && !isAgentTool(call.tool ?? call.name)))) return;
     if (expandedTools.has(id)) {
       expandedTools.delete(id);
@@ -549,6 +570,7 @@ export function minimalOutputComponent(theme: ExtensionContext["ui"]["theme"], g
       if (pinnedSubagentId === runId) pinnedSubagentId = undefined;
     } else {
       expandedSubagents.add(runId);
+      // SubAgent details open in place; sticky heading engages only after scrolling.
       pinnedSubagentId = runId;
     }
   };
@@ -567,7 +589,7 @@ export function minimalOutputComponent(theme: ExtensionContext["ui"]["theme"], g
     unpinTool: () => { pinnedToolId = undefined; pinnedTool = undefined; },
     pinnedSubagent: () => pinnedSubagent,
     unpinSubagent: () => { pinnedSubagentId = undefined; pinnedSubagent = undefined; },
-    toolChoices: () => toolControls.map(control => ({ ...control, expanded: expandedTools.has(control.id) })),
+    toolChoices: () => toolControls.map(control => ({ ...control, expanded: expandedTools.has(control.id) || expandedThinking.has(control.id) })),
     toggleTool,
     toggleSubagent,
     agentExpiry: () => agentExpiry,
@@ -623,6 +645,9 @@ export function minimalOutputComponent(theme: ExtensionContext["ui"]["theme"], g
       const turns = getTurns();
       const toolIds = new Set(turns.flatMap(turn => (turn.agentCalls ?? []).map(call => call.id)));
       for (const id of expandedTools) if (!toolIds.has(id)) expandedTools.delete(id);
+      const thinkingIds = new Set(turns.flatMap((turn, turnIndex) => turn.process.flatMap((entry, processIndex) =>
+        entry.startsWith("thinking") ? [`thinking:${turnIndex}:${processIndex}`] : [])));
+      for (const id of expandedThinking) if (!thinkingIds.has(id)) expandedThinking.delete(id);
       const inner = Math.max(1, width - 2 * Math.min(2, Math.floor((width - 1) / 2)));
       const lines: string[] = [];
       for (const [index, turn] of turns.entries()) {
@@ -653,7 +678,7 @@ export function minimalOutputComponent(theme: ExtensionContext["ui"]["theme"], g
           const thinking = part?.[1] === "thinking";
           const activeThinking = thinking && turn.running && turn.thinking === processIndex;
           const label = ({ tool: "Tool", output: "Output", thinking: "Thinking", skill: "Skill" } as Record<string, string>)[part?.[1] ?? ""] ?? "Process";
-          return [{ title: `${label} ${part?.[2] ?? entry}`, detail: part?.[2] ?? entry, state: activeThinking ? "running" : "done", id: "", thinking }];
+          return [{ title: `${label} ${part?.[2] ?? entry}`, detail: part?.[2] ?? entry, state: activeThinking ? "running" : "done", id: thinking ? `thinking:${index}:${processIndex}` : "", thinking }];
         });
         // Older in-memory turns may predate call markers.
         for (const call of turn.agentCalls ?? []) {
@@ -665,13 +690,13 @@ export function minimalOutputComponent(theme: ExtensionContext["ui"]["theme"], g
         const agents = liveAgentView(turn.subAgents ?? [], theme, width, subAgentsExpanded(), true, agentDeadlines, Date.now(), expandedSubagents, agentTurnControls);
         if (entries.length || turn.running || turn.usage || agents.total) {
           const expanded = isExpanded();
-          const shown = expanded ? entries : entries.filter(entry => !entry.thinking || entry.state === "running").slice(-5);
+          const shown = expanded ? entries : entries.filter(entry => !entry.thinking || entry.state === "running" || expandedThinking.has(entry.id)).slice(-5);
           const done = entries.filter(entry => entry.state === "done").length;
           const progressHeader = theme.bold(theme.fg("accent", "Agent")) + (entries.length ? theme.fg("muted", ` · ${done}/${entries.length}`) : "")
             + (agents.total ? theme.bold(theme.fg("accent", "     Subagent")) + theme.fg("muted", ` ${agents.done + agents.errors}/${agents.total}`)
               + (agents.errors ? theme.fg("error", ` · ${agents.errors} failed`) : "") : "");
           const header = progressHeader + theme.fg("muted", showShortcut(turn) ? " · Ctrl+O" : "");
-          const usage = addUsage(turn.usage ?? EMPTY_USAGE, turn.pendingUsage);
+          const usage = addUsage({ ...EMPTY_USAGE, ...turn.usage, cost: turn.usage?.cost ?? 0 }, turn.pendingUsage);
           const hasUsage = usage.totalTokens > 0 || usage.cacheRead > 0;
           const totals = hasUsage
             ? theme.fg("accent", "S") + theme.fg("muted", ` ${formatTokens(usage.totalTokens)} / `)
@@ -684,7 +709,10 @@ export function minimalOutputComponent(theme: ExtensionContext["ui"]["theme"], g
           } else {
             lines.push("", truncateToWidth(header, width));
           }
-          if (!shown.length && turn.running && turn.awaitingResponse && !turn.final) lines.push(truncateToWidth(theme.fg("accent", `${agents.rows.length ? "├─" : "└─"} ${runningGlyph()}`) + theme.fg("accent", theme.bold(" Thinking")) + theme.fg("text", "…"), width));
+          if (!shown.length && turn.running && turn.awaitingResponse && !turn.final) {
+            const prefix = theme.fg("accent", `${agents.rows.length ? "├─" : "└─"} ${runningGlyph()} `) + theme.fg("accent", theme.bold("Thinking")) + theme.fg("success", ` ${formatElapsed(turn.startedAt)}`) + " ";
+            lines.push(truncateToWidth(prefix + theme.fg("text", "…"), width, ""));
+          }
           shown.forEach((entry, row) => {
             const waiting = turn.waitingTools?.find(tool => tool.id === entry.id);
             const title = waiting && !entry.title.startsWith("Control ") ? `${waiting.name} running · waiting ${Math.max(0, Math.floor((Date.now() - waiting.startedAt) / 1000))}s` : entry.title;
@@ -692,26 +720,39 @@ export function minimalOutputComponent(theme: ExtensionContext["ui"]["theme"], g
             const split = text.indexOf(" ");
             const label = split < 0 ? text : text.slice(0, split);
             const body = split < 0 ? "" : text.slice(split + 1);
-            const summary = theme.fg("accent", theme.bold(label)) + " "
-              + (entry.thinking ? markdown(body, Math.max(1, visibleWidth(body) + 1), true).join(" ").replace(/\s+/g, " ").trim()
-                : secondaryAccent(theme, body));
+            const activeThinking = entry.thinking && entry.state === "running";
+            const thinkingElapsed = entry.thinking ? theme.fg(activeThinking ? "success" : "muted", ` ${formatElapsed(turn.startedAt)}`) : "";
+            const summary = theme.fg("accent", theme.bold(label)) + thinkingElapsed + " ";
             const call = turn.agentCalls?.find(call => call.id === entry.id && !isAgentTool(call.tool ?? call.name));
-            const open = !!call && expandedTools.has(call.id);
-            if (call && width >= 4) toolControls.push({ id: call.id, y: lines.length, width, title: text });
-            if (hoveredTool?.id === entry.id && (hoveredTool.y !== lines.length || hoveredTool.width !== width)) clearHover();
+            const controlId = call?.id ?? (entry.thinking ? entry.id : "");
+            const open = call ? expandedTools.has(call.id) : !!(entry.thinking && expandedThinking.has(entry.id));
+            if (controlId && width >= 4) toolControls.push({ id: controlId, y: lines.length, width, title: text });
+            if (hoveredTool?.id === controlId && (hoveredTool.y !== lines.length || hoveredTool.width !== width)) clearHover();
             const status = entry.state === "error" ? "×" : entry.state === "running" ? runningGlyph() : "●";
-            const arrow = call && (open || hoveredTool?.id === call.id);
+            const arrow = !!controlId && (open || hoveredTool?.id === controlId);
             const glyph = arrow ? (open ? "▾" : "▸") + (entry.state !== "done" ? ` ${status}` : "") : status;
+            const glyphColor = entry.state === "error" ? "error" : controlId ? "accent" : "muted";
             const last = row === shown.length - 1 && !agents.rows.length;
-            lines.push(truncateToWidth(theme.fg("accent", last ? "└─ " : "├─ ") + theme.fg(entry.state === "error" ? "error" : "accent", glyph) + " " + summary, width, call ? "" : "…"));
-            if (open && call.id === pinnedToolId) pinnedTool = { id: call.id, y: lines.length - 1, line: lines.at(-1)! };
-            if (open) {
+            const prefix = theme.fg("accent", last ? "└─ " : "├─ ") + theme.fg(glyphColor, glyph) + " " + summary;
+            if (activeThinking) {
+              const renderedBody = markdown(body, Math.max(1, visibleWidth(body) + 1), true).join(" ").replace(/\s+/g, " ").trim();
+              const bodyWidth = Math.max(0, width - visibleWidth(prefix));
+              const overflow = Math.max(0, visibleWidth(renderedBody) - bodyWidth);
+              const offset = overflow ? Math.max(0, Math.floor((Date.now() - (turn.startedAt ?? Date.now())) / THINKING_SCROLL_INTERVAL_MS) % (overflow + 9) - 4) : 0;
+              lines.push(truncateToWidth(prefix + (bodyWidth ? sliceByColumn(renderedBody, Math.min(overflow, offset), bodyWidth, true) : ""), width, ""));
+            } else lines.push(truncateToWidth(prefix + (entry.thinking ? markdown(body, Math.max(1, visibleWidth(body) + 1), true).join(" ").replace(/\s+/g, " ").trim() : secondaryAccent(theme, body)), width, controlId ? "" : "…"));
+            if (open && call && call.id === pinnedToolId) pinnedTool = { id: call.id, y: lines.length - 1, line: lines.at(-1)! };
+            if (open && call) {
               // ponytail: saved text only; native view retains images, args and custom renderers.
               const output = stripVTControlCharacters(call.output ?? "").replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
               const rail = width > 5 ? (last ? "     " : theme.fg("accent", "│    ")) : "";
               const detailWidth = Math.max(1, width - visibleWidth(rail));
               const details = new Text(output || (entry.state === "running" ? "等待工具文本结果…" : "无文本结果"), 0, 0).render(detailWidth);
               lines.push(...details.map(line => truncateToWidth(rail + theme.fg(entry.state === "error" ? "error" : "text", line), width, "")));
+            } else if (open && entry.thinking) {
+              const rail = width > 5 ? (last ? "     " : theme.fg("accent", "│    ")) : "";
+              const detailWidth = Math.max(1, width - visibleWidth(rail));
+              lines.push(...markdown(entry.detail, detailWidth, true).map(line => truncateToWidth(rail + line, width, "")));
             } else if (expanded && entry.state === "error" && entry.detail) {
               const rail = last ? "   " : theme.fg("accent", "│  ");
               const details = entry.detail.split(/\r?\n/).filter(line => line.trim());
@@ -724,7 +765,7 @@ export function minimalOutputComponent(theme: ExtensionContext["ui"]["theme"], g
           for (const c of agentTurnControls) {
             const control = { ...c, y: agentStartY + c.y };
             subagentControls.push(control);
-            if (c.runId === pinnedSubagentId) pinnedSubagent = { id: c.runId, y: control.y, line: c.line };
+            if (c.runId === pinnedSubagentId) pinnedSubagent = { id: c.runId, y: control.y, line: c.line, autoScroll: false };
           }
           lines.push(...agents.rows);
         }
@@ -818,21 +859,9 @@ export default function (pi: ExtensionAPI) {
       const supervisorNotices = new Map<string, { notice: any; messages: any[] }>();
       const handledRunIds = new Set<string>();
       const turnsWithAgents = () => {
-        const assigned = new Map<number, Record<string, unknown>[]>();
-        const claimed = new Set<string>();
-        for (const [index, turn] of minimalTurns.entries()) {
-          const matched = currentAgentStatuses(statuses, turn.agentCalls ?? []);
-          assigned.set(index, matched);
-          for (const s of matched) claimed.add(String(s.runId));
-        }
-        const latestIndex = minimalTurns.length - 1;
-        if (latestIndex >= 0) {
-          const unclaimed = statuses.filter(s => !claimed.has(String(s.runId)));
-          if (unclaimed.length) {
-            const current = assigned.get(latestIndex) ?? [];
-            assigned.set(latestIndex, [...current, ...unclaimed]);
-          }
-        }
+        // A status directory is session-wide. Never attach an unclaimed snapshot
+        // to the newest turn: an older async child may report after a follow-up.
+        const assigned = agentStatusesByTurn(statuses, minimalTurns);
         handledRunIds.clear();
         return minimalTurns.map((turn, index) => {
           const turnAgents = assigned.get(index) ?? [];
@@ -926,7 +955,7 @@ export default function (pi: ExtensionAPI) {
     },
   });
   pi.registerCommand("mini-lens-tools", {
-    description: "Expand or collapse a tool's saved text in fullscreen minimal output",
+    description: "Expand or collapse a tool's saved text or thinking in fullscreen minimal output",
     handler: async (_args, ctx) => {
       if (ctx.mode !== "tui" || !restoreTranscript || !promptView) {
         if (ctx.hasUI) ctx.ui.notify("Tool folding requires fullscreen minimal output.", "info");
@@ -1199,7 +1228,7 @@ export default function (pi: ExtensionAPI) {
       const question = contentText(event.message.content) || "[Attachment]";
       processExpanded = false;
       subAgentsExpanded = false;
-      activeMinimalTurn = { question, process: [], running: true, awaitingResponse: true, shortcutHintUntil: Date.now() + 6_000 };
+      activeMinimalTurn = { question, process: [], running: true, startedAt: Date.now(), awaitingResponse: true, shortcutHintUntil: Date.now() + 6_000 };
       if (shortcutTimer) clearTimeout(shortcutTimer);
       shortcutTimer = setTimeout(() => refreshMinimalOutput(), 6_000);
       shortcutTimer.unref();

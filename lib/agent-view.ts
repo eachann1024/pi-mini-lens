@@ -1,11 +1,11 @@
-import { diagramMarkdown, minimalMarkdownTheme } from "./minimal-markdown.ts";
+import { diagramMarkdown, isMarkdownProse, minimalMarkdownTheme } from "./minimal-markdown.ts";
 import { extractNoticeBody } from "./transcript-adapter.ts";
 import { secondaryAccent } from "./minimal-theme.ts";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { getMarkdownTheme, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Markdown, sliceByColumn, Text, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { Markdown, Text, sliceByColumn, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 
 type Theme = ExtensionContext["ui"]["theme"];
 export const RUNNING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -57,6 +57,45 @@ export function agentCallRows(calls: AgentCall[], theme: Theme, width: number, e
 }
 
 const plain = (text: string) => text.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").trim();
+
+/** pi-subagents stores a short activity preview; recover its matching raw tool input from the child session. */
+const toolInputCache = new Map<string, { stamp: string; thinking: string; inputs: Array<{ name: string; value: string }> }>();
+const singleLine = (value: string) => plain(value).replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ");
+function childSessionData(sessionFile: unknown) {
+  if (typeof sessionFile !== "string") return undefined;
+  try {
+    const stat = statSync(sessionFile);
+    const stamp = `${stat.mtimeMs}:${stat.size}`;
+    let cached = toolInputCache.get(sessionFile);
+    if (!cached || cached.stamp !== stamp) {
+      const inputs: Array<{ name: string; value: string }> = [];
+      let thinking = "";
+      for (const line of readFileSync(sessionFile, "utf8").split(/\r?\n/)) {
+        try {
+          const entry = JSON.parse(line) as { type?: string; thinkingLevel?: string; message?: { role?: string; content?: Array<{ type?: string; name?: string; input?: Record<string, unknown>; arguments?: Record<string, unknown> }> } };
+          if (entry.type === "thinking_level_change" && /^(off|minimal|low|medium|high|xhigh|max)$/.test(entry.thinkingLevel ?? "")) thinking = entry.thinkingLevel!;
+          if (entry.message?.role !== "assistant") continue;
+          for (const call of entry.message.content ?? []) {
+            if (call.type !== "toolCall" || typeof call.name !== "string") continue;
+            const input = call.arguments ?? call.input ?? {};
+            const value = [input.path, input.command, input.pattern, input.query, input.task, input.prompt]
+              .find((candidate): candidate is string => typeof candidate === "string") ?? "";
+            if (value) inputs.push({ name: call.name, value: singleLine(value) });
+          }
+        } catch { /* A concurrently written session can end with a partial line. */ }
+      }
+      cached = { stamp, thinking, inputs };
+      toolInputCache.set(sessionFile, cached);
+    }
+    return cached;
+  } catch { return undefined; }
+}
+function rawToolInput(sessionFile: unknown, tool: unknown, preview: string): string {
+  if (typeof tool !== "string" || !preview.endsWith("...")) return preview;
+  const prefix = singleLine(preview.slice(0, -3));
+  return [...(childSessionData(sessionFile)?.inputs ?? [])].reverse().find(input => input.name === tool && input.value.startsWith(prefix))?.value ?? preview;
+}
+
 const isAgentWidget = (source: string) => /^(?:[●○◉✓✗×\u2800-\u28ff]\s*)?(?:async subagent|Async agents|subagents\b|[│├└─\s]*async workflow)/i.test(source);
 /** Presentation adapter for pi-subagents' independently updated widget.
  * Unknown widget formats pass through unchanged; no task state is inferred.
@@ -114,6 +153,13 @@ function agentSummary(theme: Theme, width: number, running: number, done: number
 }
 const finishedAgent = (state: unknown) => /^(complete|completed|done|success|succeeded)$/.test(String(state));
 const failedAgent = (node: Record<string, unknown>) => !!node.error || /^(failed|error|stopped|rejected|cancelled|canceled|aborted)$/.test(String(node.status ?? node.state));
+const timestamp = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) ? value : undefined;
+function formatAgentElapsed(startedAt: number, endedAt: number): string {
+  const seconds = Math.max(0, Math.floor((endedAt - startedAt) / 1_000));
+  const minutes = Math.floor(seconds / 60);
+  const remainder = String(seconds % 60).padStart(2, "0");
+  return minutes >= 60 ? `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, "0")}:${remainder}` : `${minutes}:${remainder}`;
+}
 // Only hide the passive native agent summary, preserving the interactive fleet and external jobs/panes.
 const isAgentFleetSummary = (lines: string[]) => {
   const content = lines.map(plain).filter(Boolean);
@@ -174,6 +220,26 @@ export function currentAgentStatuses(statuses: Record<string, unknown>[], callsO
   return statuses.filter(status => selected.has(String(status.runId)));
 }
 
+/** Associate each status only with the user turn that dispatched its tool call.
+ * Status snapshots are session-wide and can update after later turns begin.
+ */
+export function agentStatusesByTurn(statuses: Record<string, unknown>[], turns: Array<{ agentCalls?: unknown[] }>): Map<number, Record<string, unknown>[]> {
+  const assigned = new Map<number, Record<string, unknown>[]>();
+  const claimed = new Set<string>();
+  for (const [index, turn] of turns.entries()) {
+    const matched = currentAgentStatuses(statuses, turn.agentCalls ?? []).filter(status => {
+      const runId = String(status.runId ?? "");
+      return !runId || !claimed.has(runId);
+    });
+    assigned.set(index, matched);
+    for (const status of matched) {
+      const runId = String(status.runId ?? "");
+      if (runId) claimed.add(runId);
+    }
+  }
+  return assigned;
+}
+
 function agentChildren(statuses: Record<string, unknown>[]): Record<string, unknown>[] {
   const children = new Map<string, Record<string, unknown>>();
   const visit = (value: unknown, key: string) => {
@@ -203,46 +269,55 @@ function agentChildren(statuses: Record<string, unknown>[]): Record<string, unkn
   return [...children.values()];
 }
 
-/** First terminal observation is immutable; tombstones prevent expanded/repeated snapshots reviving rows. */
+/** Retained for callers that share a render-state map across the current session. */
 export type AgentDeadlines = Map<string, number>;
 
 /** One snapshot drives both the inline count and its uncapped child rows. */
 export function liveAgentView(statuses: Record<string, unknown>[], theme: Theme, width: number, expanded = false, _activeOnly = false,
   deadlines: AgentDeadlines = new Map(), now = Date.now(), expandedIds?: Set<string>,
   subagentControls?: Array<{ runId: string; y: number; width: number; line: string }>) {
-  const all = agentChildren(statuses).filter(child => {
-    // Failures and attention notices are never auto-cleared.
-    if (failedAgent(child) || (child.notice as { alert?: boolean })?.alert) return true;
-    // Still-running or non-terminal agents are never auto-cleared.
-    if (!finishedAgent(child.status ?? child.state)) return true;
-    const key = JSON.stringify([child.displayId, child.startedAt ?? null]);
-    if (!deadlines.has(key)) {
-      const ended = typeof child.endedAt === "number" && Number.isFinite(child.endedAt) ? Math.min(now, child.endedAt) : now;
-      deadlines.set(key, ended + 10_000);
-    }
-    return now < deadlines.get(key)!;
-  });
+  // readAgentStatuses already scopes snapshots to the active session. Keep each
+  // current-session terminal snapshot so its title and expandable details remain
+  // available after the run completes; no separate archive is created.
+  const all = agentChildren(statuses);
   const errors = all.filter(failedAgent).length;
   const done = all.filter(child => !failedAgent(child) && finishedAgent(child.status ?? child.state)).length;
   const rows: string[] = [];
   const text = (value: unknown) => typeof value === "string" ? plain(value).replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ") : "";
+  const bodyText = (value: unknown) => typeof value === "string"
+    ? plain(value).replace(/[\x00-\x09\x0b\x0c\x0e-\x1f\x7f]/g, " ").trim() : "";
+  const renderBody = (source: string, available: number) => {
+    if (isMarkdownProse(source)) return new Markdown(source, 0, 0, minimalMarkdownTheme(getMarkdownTheme()),
+      { color: value => theme.fg("text", value) }, { transform: diagramMarkdown }).render(Math.max(1, available));
+    const rows: string[] = [];
+    for (const sourceLine of source.split(/\r?\n/)) {
+      let line = sourceLine;
+      do {
+        const row = truncateToWidth(line, Math.max(1, available), "");
+        rows.push(row);
+        line = line.slice(row.length);
+      } while (line);
+    }
+    return rows;
+  };
   if (width > 0) all.forEach((child, index) => {
     const runKey = String(child.runId ?? child.displayId);
     const isChildExpanded = expanded || (expandedIds?.has(runKey) ?? false);
     const notice = child.notice as { summary?: string; state?: string; color?: "error" | "warning" | "muted"; alert?: boolean; internal?: boolean } | undefined;
     const model = text(child.model).split("/").at(-1) || "";
     const suffix = model.match(/:(off|minimal|low|medium|high|xhigh|max)$/);
-    const level = suffix?.[1] || text(child.thinking);
+    const level = text(child.thinking) || suffix?.[1] || childSessionData(child.sessionFile)?.thinking || "?";
     const output = Array.isArray(child.recentOutput) ? child.recentOutput.at(-1) : undefined;
     const tools = Array.isArray(child.recentTools) ? child.recentTools.filter(tool => tool && typeof tool === "object") : [];
     const latest = tools.at(-1);
+    const latestArgs = rawToolInput(child.sessionFile, latest?.tool, text(latest?.args));
     const activity = notice?.summary
       || text(child.error)
       || [text(child.currentTool), text(child.currentPath || child.currentToolArgs)].filter(Boolean).join(" ")
-      || [text(latest?.tool), text(latest?.args)].filter(Boolean).join(" ")
+      || [text(latest?.tool), latestArgs].filter(Boolean).join(" ")
       || text(output) || text(child.description) || "waiting";
-    // Progress is ordinary foreground text, including rendered Markdown/code spans.
-    const body = text(new Markdown(activity, 0, 0, minimalMarkdownTheme(getMarkdownTheme()), undefined, { transform: diagramMarkdown })
+    // Tool inputs are literal code, not Markdown (heredocs can contain HTML-like text).
+    const body = latest || child.currentTool ? text(activity) : text(new Markdown(activity, 0, 0, minimalMarkdownTheme(getMarkdownTheme()), undefined, { transform: diagramMarkdown })
       .render(Math.max(1, visibleWidth(activity) + 1)).join(" "));
     const state = text(child.status ?? child.state) || "waiting";
     const terminal = failedAgent(child) || finishedAgent(state);
@@ -251,11 +326,19 @@ export function liveAgentView(statuses: Record<string, unknown>[], theme: Theme,
       : notice?.color === "warning" ? "⚠"
       : finishedAgent(state) ? "✓"
       : isRunning ? runningGlyph(now) : "●";
-    const color = isChildExpanded ? "accent" : "text";
+    const color = "text";
+    // Status snapshots, not the dispatch tool receipt, define a child run's lifecycle.
+    // Preserve a terminal observation when an older pi-subagents status omits endedAt.
+    const elapsedKey = `elapsed:${runKey}`;
+    const startedAt = timestamp(child.startedAt) ?? deadlines.get(elapsedKey) ?? now;
+    if (!timestamp(child.startedAt)) deadlines.set(elapsedKey, startedAt);
+    const endedAt = terminal ? timestamp(child.endedAt) ?? deadlines.get(`${elapsedKey}:ended`) ?? now : now;
+    if (terminal) deadlines.set(`${elapsedKey}:ended`, endedAt);
+    const elapsed = formatAgentElapsed(startedAt, endedAt);
     const heading = truncateToWidth(theme.fg(color, `${index === all.length - 1 ? "└─" : "├─"} ${glyph} `)
       + theme.fg("accent", theme.bold("SubAgent"))
       + theme.fg(color, ` • ${suffix ? model.slice(0, -suffix[0].length) : model}`)
-      + (level ? theme.fg("muted", ` ${level}`) : "") + theme.fg(color, " : "), width, "…");
+      + (level ? theme.fg("muted", ` ${level}`) : "") + theme.fg(terminal ? "muted" : "success", ` ${elapsed}`) + theme.fg(color, " : "), width, "…");
     const bodyBudget = Math.max(0, width - visibleWidth(heading));
     const overflow = Math.max(0, visibleWidth(body) - bodyBudget);
     const offset = !terminal && overflow ? Math.max(0, Math.floor(Math.max(0, now - (typeof latest?.endMs === "number" ? latest.endMs : typeof child.lastActivityAt === "number" ? child.lastActivityAt : 0)) / 250) % (overflow + 9) - 4) : 0;
@@ -265,30 +348,31 @@ export function liveAgentView(statuses: Record<string, unknown>[], theme: Theme,
     subagentControls?.push({ runId: runKey, y: rows.length, width, line });
     rows.push(line);
     if (isChildExpanded) {
-      const splitLines = (source: string, avail: number) => {
-        return source.split(/\r?\n/).flatMap(l => {
-          const res: string[] = [];
-          let rem = l;
-          while (visibleWidth(rem) > avail && avail > 0) {
-            const part = truncateToWidth(rem, avail, "");
-            if (!part) break;
-            res.push(part);
-            rem = rem.slice(part.length);
-          }
-          res.push(rem);
-          return res;
-        });
-      };
       const messages = Array.isArray(child.noticeMessages) ? child.noticeMessages : [];
-      if (messages.length) {
-        const bodies: string[] = [];
-        for (const msg of messages) {
-          const b = extractNoticeBody(msg);
+      const bodies: string[] = [];
+      for (const msg of messages) {
+        const b = extractNoticeBody(msg);
+        if (b && !bodies.includes(b)) bodies.push(b);
+      }
+      // Some completed runs have no supervisor notice. Their snapshot still
+      // carries recent output, which is the in-session detail shown on expand.
+      if (!bodies.length && Array.isArray(child.recentOutput)) {
+        for (const output of child.recentOutput) {
+          const b = bodyText(output);
           if (b && !bodies.includes(b)) bodies.push(b);
         }
-        for (const textBody of bodies) {
-          const lines = splitLines(textBody, Math.max(1, width - 5));
-          for (const l of lines) rows.push(truncateToWidth(`   ${theme.fg("text", l)}`, width));
+      }
+      if (!bodies.length && !terminal) {
+        // Live runs may have tool activity but no output or supervisor notice yet.
+        const detail = activity === "waiting" ? "等待子代理输出…" : activity;
+        rows.push(...new Text(detail, 0, 0).render(Math.max(1, width - 3))
+          .map(line => truncateToWidth(`   ${line}`, width)));
+      }
+      for (const textBody of bodies) {
+        // Child/supervisor bodies are Markdown prose; tool logs and JSON are
+        // not placed in this semantic body channel.
+        for (const line of renderBody(textBody, Math.max(1, width - 3))) {
+          rows.push(truncateToWidth(`   ${line}`, width));
         }
       }
     }

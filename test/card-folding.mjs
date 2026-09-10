@@ -29,6 +29,11 @@ assert.match(goalCollapsed, /\[详情\]/);
 const goalExpanded = compactGoalCard(goal, theme, 120, true).join('\n');
 assert.match(goalExpanded, /\[收起\]/);
 assert.match(goalExpanded, /完整验收/);
+const markdownGoal = { customType: 'pi-codex-goal', data: { goal: { objective: '## 目标\n\n- **验收**使用 `命令`', status: 'active' } } };
+const markdownGoalExpanded = compactGoalCard(markdownGoal, theme, 120, true).join('\n');
+const markdownGoalBody = markdownGoalExpanded.split('\n').slice(1).join('\n');
+assert.doesNotMatch(markdownGoalBody, /## 目标|\*\*验收\*\*|`命令`/);
+assert.match(markdownGoalBody, /目标[\s\S]*验收.*命令/);
 assert.equal(compactGoalCard({ customType: 'other', data: goal.data }, theme, 120, false), undefined);
 
 // Exercise the transcript adapter's real CustomEntryComponent seam and click path.

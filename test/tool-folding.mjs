@@ -58,6 +58,53 @@ expanded = false;
 view.handleMouse(event(view.toolChoices()[0], { clickCount: 2 }));
 assert.doesNotMatch(view.render(80).join('\n'), /FIRST_RESULT/, 'rapid second click collapses');
 
+const thought = 'First paragraph of live thought.\n\nSECOND_PARAGRAPH stays hidden until expanded';
+const thinkingTurn = { question: 'q', process: [`thinking ${thought}`], running: true, thinking: 0, startedAt: Date.now() };
+const thinkingView = minimalOutputComponent(theme, () => [thinkingTurn]);
+thinkingView.render(40);
+const thinkingControl = thinkingView.toolChoices().find(choice => choice.id.startsWith('thinking:'));
+assert.ok(thinkingControl, 'live thinking exposes a glyph control');
+assert.doesNotMatch(plain(thinkingView.render(40).join('\n')), /SECOND_PARAGRAPH/);
+for (const changes of [{ shift: true }, { ctrl: true }, { alt: true }, { button: 'right' }]) {
+  assert.equal(thinkingView.handleMouse(event(thinkingControl, changes)), undefined);
+}
+assert.doesNotMatch(plain(thinkingView.render(40).join('\n')), /SECOND_PARAGRAPH/);
+thinkingView.handleMouse(event(thinkingControl));
+assert.match(plain(thinkingView.render(40).join('\n')), /SECOND_PARAGRAPH/);
+thinkingView.handleMouse(event(thinkingView.toolChoices().find(choice => choice.id.startsWith('thinking:')), { clickCount: 2 }));
+assert.doesNotMatch(plain(thinkingView.render(40).join('\n')), /SECOND_PARAGRAPH/, 'rapid second click collapses');
+thinkingView.handleMouse(event(thinkingView.toolChoices().find(choice => choice.id.startsWith('thinking:'))));
+thinkingTurn.running = false;
+thinkingTurn.thinking = undefined;
+assert.match(plain(thinkingView.render(40).join('\n')), /SECOND_PARAGRAPH/, 'expanded thinking stays after it finishes');
+thinkingView.handleMouse(event(thinkingView.toolChoices().find(choice => choice.id.startsWith('thinking:'))));
+assert.doesNotMatch(plain(thinkingView.render(40).join('\n')), /SECOND_PARAGRAPH|Thinking First paragraph/);
+const placeholder = minimalOutputComponent(theme, () => [{ question: 'q', process: [], running: true, awaitingResponse: true }]);
+placeholder.render(80);
+assert.equal(placeholder.toolChoices().length, 0, 'empty Thinking placeholder is not expandable');
+
+// Running SubAgents without output must visibly open, then update in place.
+const child = { agent: 'worker', status: 'running', currentTool: 'bash', currentToolArgs: 'npm test', recentOutput: [] };
+const agentTurn = { question: 'q', process: [], subAgents: [{ runId: 'live-child', mode: 'single', state: 'running', steps: [child] }] };
+const agentView = minimalOutputComponent(theme, () => [agentTurn]);
+const agentHeading = () => agentView.render(80).findIndex(row => row.includes('SubAgent'));
+const agentDetails = () => agentView.render(80).slice(agentHeading() + 1).join('\n');
+assert.equal(agentDetails(), '');
+assert.deepEqual(agentView.handleMouse(event({ y: agentHeading() }, { type: 'press' })), { handled: true });
+assert.deepEqual(agentView.handleMouse(event({ y: agentHeading() })), { handled: true, render: true });
+assert.match(agentDetails(), /bash npm test/);
+child.currentToolArgs = 'npm run check';
+assert.match(agentDetails(), /bash npm run check/, 'expanded live activity refreshes');
+child.currentTool = '';
+child.currentToolArgs = '';
+assert.match(agentDetails(), /等待子代理输出/, 'empty live run still visibly expands');
+child.recentOutput = ['LIVE_OUTPUT'];
+assert.match(agentDetails(), /LIVE_OUTPUT/);
+agentTurn.subAgents[0].state = 'complete';
+assert.match(agentDetails(), /LIVE_OUTPUT/, 'completion preserves expansion');
+agentView.handleMouse(event({ y: agentHeading() }));
+assert.equal(agentDetails(), '', 'completed run can collapse');
+
 const document = new Container();
 const header = new Container();
 header.addChild(new Text('HEADER\nRESOURCE', 0, 0));
@@ -207,7 +254,7 @@ const ctx = { mode: 'tui', hasUI: true, sessionManager: { getBranch: () => branc
 } };
 try {
   await writeFile(join(dir, 'mini-lens.json'), JSON.stringify({ 'mini-lens-minimal-show': true, onboardingCompleted: true }));
-  extension({ events: { on() { return () => {}; } }, on(name, fn) { handlers.set(name, fn); }, registerCommand(name, cmd) { commands.set(name, cmd); } });
+  extension({ events: { on() { return () => {}; } }, on(name, fn) { handlers.set(name, fn); }, registerCommand(name, cmd) { commands.set(name, cmd); }, registerEntryRenderer() {}, appendEntry() {} });
   await handlers.get('session_start')({}, ctx);
   tui.start(); await paint(); scroll.scrollTo(0); await paint();
   // Run the real extension mounting path, not just manually composed adapters.
