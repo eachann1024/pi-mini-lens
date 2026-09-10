@@ -14,6 +14,16 @@ function ansiColor(ansi: string): RGB | undefined {
   }
 }
 
+/** Secondary accent: two 20% steps toward the theme's neutral foreground. */
+export function secondaryAccent(theme: ExtensionContext["ui"]["theme"], text: string): string {
+  const accent = ansiColor(theme.fg("accent", ""));
+  const neutral = ansiColor(theme.fg("muted", ""));
+  if (!accent || !neutral) return theme.fg("accent", text);
+  const rgb = accent.map((value, i) => Math.round(value * 0.6 + neutral[i] * 0.4));
+  const prefix = `\x1b[38;2;${rgb.join(";")}m`;
+  return prefix + text.replace(/\x1b\[(?:0|39)?m/g, reset => reset + prefix) + "\x1b[39m";
+}
+
 /** User gets the stronger accent surface; process gets its secondary tint. */
 export function minimalSurface(theme: ExtensionContext["ui"]["theme"], text: string, user = false): string {
   const base = ansiColor(theme.getBgAnsi?.("userMessageBg") ?? "");

@@ -19,6 +19,7 @@ const { default: extension, loadSettings, settingsPath, settingsPreviewLine, DEF
 
 const dir = await mkdtemp(join(tmpdir(), "mini-lens-pointer-"));
 process.env.MINI_LENS_AGENT_DIR = dir;
+process.env.LANG = "en_US.UTF-8";
 const commands = new Map();
 extension({ events: { on() { return () => {}; } }, on() {}, registerCommand(name, command) { commands.set(name, command); } });
 let panel;
@@ -36,7 +37,25 @@ await commands.get("mini-lens-settings").handler("", {
   },
 });
 const plain = (line) => line.replace(/\x1b\[[0-9;]*m/g, "");
-assert.match(panel.render(100).join("\n"), /极简输出/);
+assert.match(panel.render(100).join("\n"), /Collapse replies/);
+assert.match(panel.render(100).join("\n"), /Minimal output/);
+assert.match(plain(panel.render(100).join("\n")), /Collapse replies\s+off/);
+panel.handleInput("\x1b[B"); // Collapse replies
+panel.handleInput("\x1b[B"); // Minimal output (disabled)
+panel.handleInput("\r");
+assert.match(plain(panel.render(100).join("\n")), /Collapse replies/, "disabled Minimal output does not open");
+assert.doesNotMatch(plain(panel.render(100).join("\n")), /Show thinking/);
+assert.match(plain(panel.render(100).join("\n")), /Turn on Collapse replies to configure these options/);
+panel.handleInput("\x1b[A"); // Collapse replies
+panel.handleInput("\r"); // on
+assert.match(plain(panel.render(100).join("\n")), /Collapse replies\s+on/);
+panel.handleInput("\x1b[B"); // Minimal output
+panel.handleInput("\r"); // enter unlocked group
+assert.match(plain(panel.render(100).join("\n")), /Show thinking/);
+assert.doesNotMatch(plain(panel.render(100).join("\n")), /Collapse replies/);
+panel.handleInput("\x1b"); // back to groups
+panel.handleInput("\x1b[A"); // Collapse replies
+panel.handleInput("\x1b[A"); // Lens
 panel.handleInput("\r"); // Enter the Lens group.
 for (const width of [140, 80, 40]) {
   let lines = panel.render(width);

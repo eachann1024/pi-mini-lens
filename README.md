@@ -3,14 +3,14 @@
 </p>
 
 <p align="center">
-  <a href="README.zh-CN.md">简体中文</a> · <a href="#install">Install</a> · <a href="#make-it-yours">Settings</a> · <a href="https://github.com/user-attachments/assets/5f2f4816-45ed-4759-b035-d9ee59e8a763">Watch demo</a>
+  <a href="#install">Install</a> · <a href="#make-it-yours">Settings</a> · <a href="https://github.com/user-attachments/assets/5f2f4816-45ed-4759-b035-d9ee59e8a763">Watch demo</a>
 </p>
 
 A compact, configurable footer for [Pi](https://pi.dev). Your model, usage, cost estimate, context, and generation speed — at a glance.
 
 ## Minimal output
 
-`/mini-lens-settings` now has **Lens** and **极简输出 (Minimal output)** submenus. Minimal mode is on by default; explicit off settings are respected.
+`/mini-lens-settings` now has **Lens**, a separate **Collapse replies** switch, and **Minimal output**. Collapsed replies are off by default, so Pi's conversation history stays native until you turn them on. While the switch is off, Minimal output options stay disabled.
 
 - `/mini-lens-minimal on` shows the user's Markdown on an accent-tinted surface, a background-free process summary, and the final reply without a heading or extra background. No duplicate dock panel.
 - Each turn uses one shared tree showing the latest **six summary entries**: available thinking, tool calls, streaming tool output, and skill reads. `Ctrl+O` expands the full Markdown process and toggles it closed again; new questions start collapsed; tools without output show an elapsed wait counter, and empty progress events never overwrite existing content; there are no section headings, collapsed counts, or completion labels. Original session messages remain intact.
@@ -19,7 +19,7 @@ A compact, configurable footer for [Pi](https://pi.dev). Your model, usage, cost
 - `/mini-lens-history` browses complete process entries, five at a time.
 - Final Markdown streams as text events arrive; failures and interruptions are indicated.
 - `/reload` remounts the transcript, including history created in native mode. Expanded tree rails continue through paragraphs, blank lines and code blocks.
-- `/mini-lens-minimal off` restores native rendering.
+- `/mini-lens-minimal off` restores Pi's default conversation history.
 
 The user surface blends the active Pi accent with its user background. Process and answer text have no background. User padding is two terminal columns horizontally and one row vertically. Markdown, highlighted code, tables and Mermaid terminal diagrams work in light/dark themes; incomplete, unsupported or over-wide diagrams retain their source. **Minimal mode uses a private Pi 0.85.x layout adapter**, without patching the Pi installation. Unknown layouts refuse activation and retain native output. Recheck compatibility after Pi upgrades; another extension replacing the transcript may conflict.
 
@@ -76,6 +76,9 @@ Customize with `/mini-lens-settings`. Changes take effect immediately.
 
 **Fits your terminal.** Follows your Pi theme and adapts to narrow widths. Only the footer changes; Pi's built-in tool and thinking views stay intact.
 
+Bundled themes `cc-light` / `cc-dark` are vendored from [pi-cc-extensions](https://github.com/minuque/pi-cc-extensions) (MIT).
+
+
 ## Reference
 
 <details>
@@ -87,7 +90,7 @@ On the first interactive TUI session, Mini Lens shows a preview with every field
 deepseek-v4-flash  high  Total 45K  Cached 25K  CH 40.0%  $0.012  500/1.0M  █░░░░░░░░░  1%  120 tok/s
 ```
 
-The first-run picker offers **Keep defaults** and **Configure now**. Keeping defaults persists every display field as enabled and prevents the prompt from appearing again; configuring opens the same settings list immediately. Print, JSON, and other non-interactive modes never prompt.
+The first-run picker offers **Keep defaults** and **Configure now**. Keeping defaults persists footer fields as enabled, leaves collapsed replies off, and prevents the prompt from appearing again; configuring opens the same settings list immediately. Print, JSON, and other non-interactive modes never prompt.
 
 Open that settings UI any time with:
 
@@ -130,7 +133,8 @@ Settings are stored globally at Pi's agent directory (normally `~/.pi/agent/mini
 | `mini-lens-context-dots-show` | `false` | Use a single-line dot-matrix bar instead of the default solid bar |
 | `mini-lens-context-percent-show` | `true` | Context-use percentage |
 | `mini-lens-speed-show` | `true` | Generation speed at the far right |
-| &nbsp;&nbsp;&nbsp;&nbsp;`mini-lens-speed-unit-show` | `true` | Generation-speed sub-setting: append `tok/s` to the numeric value |
+| `mini-lens-speed-unit-show` | `true` | Generation-speed sub-setting: append `tok/s` to the numeric value |
+| `mini-lens-minimal-show` | `false` | Collapse replies; off keeps Pi's default conversation history |
 | `onboardingCompleted` | `false` initially | Internal marker that prevents another first-run prompt |
 
 - **Generation speed**

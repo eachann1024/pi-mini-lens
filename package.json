@@ -1,11 +1,11 @@
 {
   "name": "@each1024/pi-mini-mode",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "description": "A compact Pi footer with live usage metrics, theme-aware settings previews, and configurable progress bars.",
   "type": "module",
   "scripts": {
     "check": "tsc --noEmit -p tsconfig.json",
-    "test": "node test/footer-status-self-check.mjs && node test/settings-interaction.mjs && node test/transcript-adapter.mjs && node test/minimal-markdown.mjs && node test/agent-view.mjs && node test/publish-self-check.mjs"
+    "test": "node test/footer-status-self-check.mjs && node test/settings-interaction.mjs && node test/transcript-adapter.mjs && node test/prompt-folding.mjs && node test/tool-folding.mjs && node test/sticky-tool.mjs && node test/minimal-markdown.mjs && node test/agent-view.mjs && node test/publish-self-check.mjs"
   },
   "license": "MIT",
   "author": "eachann1024",
@@ -28,6 +28,10 @@
     "video": "https://raw.githubusercontent.com/eachann1024/pi-mini-mode/main/assets/mini-lens-settings.mp4",
     "extensions": [
       "./extensions/footer-status.ts"
+    ],
+    "themes": [
+      "./themes/cc-dark.json",
+      "./themes/cc-light.json"
     ]
   },
   "peerDependencies": {
@@ -37,8 +41,8 @@
   "files": [
     "extensions",
     "lib",
+    "themes",
     "README.md",
-    "README.zh-CN.md",
     "LICENSE"
   ],
   "publishConfig": {
